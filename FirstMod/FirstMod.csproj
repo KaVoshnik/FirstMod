@@ -44,6 +44,10 @@
             <HintPath>$(ProfileBepInEx)\plugins\MMHOOK\MMHOOK_RoR2.dll</HintPath>
             <Private>false</Private>
         </Reference>
+        <Reference Include="Rewired_Core">
+            <HintPath>$(GameManaged)\Rewired_Core.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
     </ItemGroup>
 
     <Target Name="CopyToPlugins" AfterTargets="Build">
