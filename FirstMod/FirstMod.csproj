@@ -48,6 +48,14 @@
             <HintPath>$(GameManaged)\Rewired_Core.dll</HintPath>
             <Private>false</Private>
         </Reference>
+        <Reference Include="HGCSharpUtils">
+            <HintPath>$(GameManaged)\HGCSharpUtils.dll</HintPath>
+            <Private>False</Private>
+        </Reference>
+        <Reference Include="UnityEngine.TextRenderingModule">
+            <HintPath>$(GameManaged)\UnityEngine.TextRenderingModule.dll</HintPath>
+            <Private>False</Private>
+        </Reference>
     </ItemGroup>
 
     <Target Name="CopyToPlugins" AfterTargets="Build">
