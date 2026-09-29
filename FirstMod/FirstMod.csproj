@@ -3,8 +3,9 @@
     <PropertyGroup>
         <TargetFramework>netstandard2.1</TargetFramework>
         <LangVersion>latest</LangVersion>
-        <GameManaged>D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2_Data\Managed</GameManaged>
-        <ProfileBepInEx>C:\Users\Administrator\AppData\Roaming\Thunderstore Mod Manager\DataFolder\RiskOfRain2\profiles\Default\BepInEx</ProfileBepInEx>
+        <!-- Переопредели через переменные окружения или .csproj.user, если пути отличаются -->
+        <GameManaged Condition="'$(GameManaged)' == ''">D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2_Data\Managed</GameManaged>
+        <ProfileBepInEx Condition="'$(ProfileBepInEx)' == ''">C:\Users\Administrator\AppData\Roaming\Thunderstore Mod Manager\DataFolder\RiskOfRain2\profiles\Default\BepInEx</ProfileBepInEx>
     </PropertyGroup>
 
     <ItemGroup>
@@ -59,7 +60,7 @@
     </ItemGroup>
 
     <Target Name="CopyToPlugins" AfterTargets="Build">
-        <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ProfileBepInEx)\plugins\FirstMod" />
+        <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ProfileBepInEx)\plugins\FirstMod" ContinueOnError="WarnAndContinue" />
     </Target>
 
 </Project>

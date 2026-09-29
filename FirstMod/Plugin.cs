@@ -78,24 +78,109 @@ namespace FirstMod
 
         private Rect windowRect;
         private bool stylesReady;
-        private GUIStyle windowStyle, btnStyle, btnOnStyle, tabStyle, labelStyle, warnStyle, textStyle;
+        private GUIStyle windowStyle, btnStyle, btnOnStyle, tabStyle, labelStyle, warnStyle, textStyle, footerStyle;
 
         // ---------- Состояние (серверная часть) ----------
         // кто бессмертен / кто убивает с одного удара (хранится только на сервере)
         private static readonly HashSet<NetworkInstanceId> GodMasters = new HashSet<NetworkInstanceId>();
         private static readonly HashSet<NetworkInstanceId> OneShotMasters = new HashSet<NetworkInstanceId>();
 
-        private static Plugin instance;
+        // текстуры GUI, которые нужно уничтожить вручную (HideAndDontSave не убирается сборщиком мусора)
+        private static readonly List<Texture2D> generatedTextures = new List<Texture2D>();
+
         private bool commandsRegistered;
+
+        // ---------- Локализация ----------
+        private enum Lang { RU, EN }
+        private static Lang currentLang = Lang.RU;
+
+        private static readonly Dictionary<string, string[]> Loc = new Dictionary<string, string[]>
+        {
+            { "tab_player",     new[] { "Игрок", "Player" } },
+            { "tab_movement",   new[] { "Передвижение", "Movement" } },
+            { "tab_combat",     new[] { "Бой", "Combat" } },
+            { "tab_world",      new[] { "Мир", "World" } },
+            { "tab_items",      new[] { "Предметы", "Items" } },
+            { "tab_spawn",      new[] { "Спавн", "Spawn" } },
+            { "tab_settings",   new[] { "Настройки", "Settings" } },
+
+            { "warn_client",    new[] { "Вы клиент: серверные функции сработают, только если мод установлен и у хоста",
+                                         "You are a client: server-side features only work if the mod is installed on the host" } },
+
+            { "god",            new[] { "Бессмертие", "God Mode" } },
+            { "for_all",        new[] { "Действия для всех игроков", "Apply to all players" } },
+            { "heal",           new[] { "Лечить", "Heal" } },
+            { "revive",         new[] { "Воскресить", "Revive" } },
+            { "money",          new[] { "+1000 денег", "+1000 Money" } },
+            { "lunar",          new[] { "+10 лунных монет", "+10 Lunar Coins" } },
+
+            { "move_speed",     new[] { "Скорость игрока", "Move Speed" } },
+            { "inf_jumps",      new[] { "Бесконечные прыжки", "Infinite Jumps" } },
+            { "fly",            new[] { "Полёт (WASD, Space, Ctrl)", "Flight (WASD, Space, Ctrl)" } },
+            { "noclip",         new[] { "Noclip (сквозь стены)", "Noclip (through walls)" } },
+            { "movement_note",  new[] { "Эти функции работают локально, в том числе не у хоста.",
+                                         "These features work locally, even when you are not the host." } },
+
+            { "oneshot",        new[] { "Ваншот всего", "One-Shot Everything" } },
+            { "attack_speed",   new[] { "Скорость атаки", "Attack Speed" } },
+            { "crit",           new[] { "100% шанс крита", "100% Crit Chance" } },
+            { "inst_cd",        new[] { "Мгновенный кулдаун скиллов", "Instant Skill Cooldowns" } },
+            { "killall",        new[] { "Убить всех врагов", "Kill All Enemies" } },
+
+            { "game_speed",     new[] { "Скорость игры", "Game Speed" } },
+            { "tele",           new[] { "Мгновенно зарядить телепорт", "Instantly Charge Teleporter" } },
+            { "nextstage",      new[] { "Следующий этап", "Next Stage" } },
+            { "restartstage",   new[] { "Перезапустить этап", "Restart Stage" } },
+            { "addtime",        new[] { "+5 минут к таймеру забега", "+5 Minutes to Run Timer" } },
+
+            { "itemmode_give",  new[] { "Выдать", "Give" } },
+            { "itemmode_take",  new[] { "Убрать", "Remove" } },
+            { "itemmode_equip", new[] { "Экипировка", "Equipment" } },
+            { "for_all_items",  new[] { "Для всех игроков", "For all players" } },
+            { "search",         new[] { "Поиск:", "Search:" } },
+            { "remove_equip",   new[] { "Убрать экипировку", "Remove Equipment" } },
+            { "amount",         new[] { "Количество:", "Amount:" } },
+            { "clear_inv",      new[] { "Очистить инвентарь", "Clear Inventory" } },
+            { "cat_items",      new[] { "Каталог предметов ещё загружается...", "Item catalog still loading..." } },
+            { "cat_spawn",      new[] { "Каталог существ ещё загружается...", "Creature catalog still loading..." } },
+
+            { "spawn_ally",     new[] { "Спавнить союзниками", "Spawn as Allies" } },
+
+            { "settings_lang",  new[] { "Язык интерфейса", "Interface Language" } },
+        };
+
+        private static string T(string key)
+        {
+            string[] v;
+            if (!Loc.TryGetValue(key, out v)) return key;
+            return v[currentLang == Lang.RU ? 0 : 1];
+        }
+
+        private string[] tabLabels;
+        private string[] itemModeLabels;
+
+        private void RebuildLabels()
+        {
+            tabLabels = new[]
+            {
+                T("tab_player"), T("tab_movement"), T("tab_combat"),
+                T("tab_world"), T("tab_items"), T("tab_spawn"), T("tab_settings")
+            };
+            itemModeLabels = new[] { T("itemmode_give"), T("itemmode_take"), T("itemmode_equip") };
+        }
 
         // ---------- Инициализация ----------
         private void Awake()
         {
-            instance = this;
             Logger.LogInfo("FirstMod loaded!");
 
             On.RoR2.HealthComponent.TakeDamage += OnTakeDamage;
             On.RoR2.CharacterBody.RecalculateStats += OnRecalculateStats;
+
+            // Сброс серверных флагов при старте/окончании забега, чтобы netId не "утекали"
+            // на других игроков в следующем забеге (см. CmdGod/CmdOneShot).
+            Run.onRunStartGlobal += OnRunChangedGlobal;
+            Run.onRunDestroyGlobal += OnRunChangedGlobal;
 
             // Консольные команды регистрируем, когда игра полностью загрузилась
             RoR2Application.onLoad += RegisterCommands;
@@ -107,10 +192,26 @@ namespace FirstMod
             On.RoR2.HealthComponent.TakeDamage -= OnTakeDamage;
             On.RoR2.CharacterBody.RecalculateStats -= OnRecalculateStats;
             RoR2Application.onLoad -= RegisterCommands;
+            Run.onRunStartGlobal -= OnRunChangedGlobal;
+            Run.onRunDestroyGlobal -= OnRunChangedGlobal;
 
             if (noclipBody) SetNoclip(noclipBody, false);
             if (showMenu) SetMenu(false);
             Time.timeScale = 1f;
+
+            foreach (var tex in generatedTextures)
+                if (tex) Destroy(tex);
+            generatedTextures.Clear();
+        }
+
+        // Новый забег на сервере = старые netId в GodMasters/OneShotMasters могут
+        // достаться другим объектам. Чистим списки и синхронизируем кнопки в UI.
+        private void OnRunChangedGlobal(Run run)
+        {
+            GodMasters.Clear();
+            OneShotMasters.Clear();
+            godMode = false;
+            oneShot = false;
         }
 
         // ---------- Хуки ----------
@@ -152,7 +253,7 @@ namespace FirstMod
         // ---------- Каждый кадр ----------
         private void Update()
         {
-            if (Input.GetKeyDown(KeyCode.N))
+            if (Input.GetKeyDown(KeyCode.BackQuote))
                 SetMenu(!showMenu);
             else if (showMenu && Input.GetKeyDown(KeyCode.Escape))
                 SetMenu(false);
@@ -280,12 +381,12 @@ namespace FirstMod
 
         private void DrawWindow(int id)
         {
-            tab = GUILayout.Toolbar(tab, new[] { "Player", "Movement", "Combat", "World", "Items", "Spawn" }, tabStyle);
+            tab = GUILayout.Toolbar(tab, tabLabels, tabStyle);
             GUILayout.Space(12);
 
             if (!NetworkServer.active)
             {
-                GUILayout.Label("Вы клиент: серверные функции сработают, только если мод установлен и у хоста", warnStyle);
+                GUILayout.Label(T("warn_client"), warnStyle);
                 GUILayout.Space(8);
             }
 
@@ -302,6 +403,7 @@ namespace FirstMod
                 case 3: DrawWorldTab(); break;
                 case 4: DrawItemsTab(); break;
                 case 5: DrawSpawnTab(); break;
+                case 6: DrawSettingsTab(); break;
             }
 
             GUILayout.EndVertical();
@@ -314,11 +416,32 @@ namespace FirstMod
                 var body = GetBody();
                 if (body) body.MarkAllStatsDirty(); // пересчитать статы с новыми значениями
             }
+
+            // окно можно таскать за верхнюю полосу (область заголовка)
+            GUI.DragWindow(new Rect(0f, 0f, windowRect.width, 40f));
+        }
+
+        private void DrawSettingsTab()
+        {
+            GUILayout.Label(T("settings_lang"), labelStyle);
+            GUILayout.Space(8);
+
+            GUILayout.BeginHorizontal();
+            bool wantRu = GUILayout.Toggle(currentLang == Lang.RU, "Русский", currentLang == Lang.RU ? btnOnStyle : btnStyle, GUILayout.Height(38));
+            GUILayout.Space(8);
+            bool wantEn = GUILayout.Toggle(currentLang == Lang.EN, "English", currentLang == Lang.EN ? btnOnStyle : btnStyle, GUILayout.Height(38));
+            GUILayout.EndHorizontal();
+
+            if (wantRu && currentLang != Lang.RU) { currentLang = Lang.RU; RebuildLabels(); }
+            else if (wantEn && currentLang != Lang.EN) { currentLang = Lang.EN; RebuildLabels(); }
+
+            GUILayout.FlexibleSpace();
+            GUILayout.Label("FirstMod by Kavoshnik", footerStyle);
         }
 
         private void DrawPlayerTab()
         {
-            bool g = ToggleButton(godMode, "Бессмертие");
+            bool g = ToggleButton(godMode, T("god"));
             if (g != godMode)
             {
                 godMode = g;
@@ -326,46 +449,46 @@ namespace FirstMod
             }
             GUILayout.Space(8);
 
-            forAllPlayers = ToggleButton(forAllPlayers, "Действия для всех игроков");
+            forAllPlayers = ToggleButton(forAllPlayers, T("for_all"));
             GUILayout.Space(8);
 
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Лечить", btnStyle))
+            if (GUILayout.Button(T("heal"), btnStyle))
                 Send("fm_heal " + AllFlag());
-            if (GUILayout.Button("Воскресить", btnStyle))
+            if (GUILayout.Button(T("revive"), btnStyle))
                 Send("fm_revive " + AllFlag());
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
-            if (GUILayout.Button("+1000 денег", btnStyle))
+            if (GUILayout.Button(T("money"), btnStyle))
                 Send("fm_money 1000 " + AllFlag());
             GUILayout.Space(8);
 
-            if (GUILayout.Button("+10 лунных монет", btnStyle))
+            if (GUILayout.Button(T("lunar"), btnStyle))
                 Send("fm_lunar 10");
         }
 
         private void DrawMovementTab()
         {
-            SliderRow("Скорость игрока", ref moveSpeedOn, ref moveSpeed, 1f, 10f);
+            SliderRow(T("move_speed"), ref moveSpeedOn, ref moveSpeed, 1f, 10f);
             GUILayout.Space(8);
 
-            bool j = ToggleButton(infJumps, "Бесконечные прыжки");
+            bool j = ToggleButton(infJumps, T("inf_jumps"));
             if (j != infJumps) { infJumps = j; statsChanged = true; }
             GUILayout.Space(8);
 
-            SliderRow("Полёт (WASD, Space, Ctrl)", ref flyOn, ref flySpeed, 1f, 10f);
+            SliderRow(T("fly"), ref flyOn, ref flySpeed, 1f, 10f);
             GUILayout.Space(8);
 
-            noclipOn = ToggleButton(noclipOn, "Noclip (сквозь стены)");
+            noclipOn = ToggleButton(noclipOn, T("noclip"));
             GUILayout.Space(8);
 
-            GUILayout.Label("Эти функции работают локально, в том числе не у хоста.", labelStyle);
+            GUILayout.Label(T("movement_note"), labelStyle);
         }
 
         private void DrawCombatTab()
         {
-            bool o = ToggleButton(oneShot, "Ваншот всего");
+            bool o = ToggleButton(oneShot, T("oneshot"));
             if (o != oneShot)
             {
                 oneShot = o;
@@ -373,38 +496,38 @@ namespace FirstMod
             }
             GUILayout.Space(8);
 
-            SliderRow("Скорость атаки", ref attackSpeedOn, ref attackSpeed, 1f, 50f);
+            SliderRow(T("attack_speed"), ref attackSpeedOn, ref attackSpeed, 1f, 50f);
             GUILayout.Space(8);
 
-            bool c = ToggleButton(critOn, "100% шанс крита");
+            bool c = ToggleButton(critOn, T("crit"));
             if (c != critOn) { critOn = c; statsChanged = true; }
             GUILayout.Space(8);
 
-            instantCooldowns = ToggleButton(instantCooldowns, "Мгновенный кулдаун скиллов");
+            instantCooldowns = ToggleButton(instantCooldowns, T("inst_cd"));
             GUILayout.Space(8);
 
-            if (GUILayout.Button("Убить всех врагов", btnStyle))
+            if (GUILayout.Button(T("killall"), btnStyle))
                 Send("fm_killall");
         }
 
         private void DrawWorldTab()
         {
-            SliderRow("Скорость игры", ref gameSpeedOn, ref gameSpeed, 0.1f, 5f);
+            SliderRow(T("game_speed"), ref gameSpeedOn, ref gameSpeed, 0.1f, 5f);
             GUILayout.Space(8);
 
-            if (GUILayout.Button("Мгновенно зарядить телепорт", btnStyle))
+            if (GUILayout.Button(T("tele"), btnStyle))
                 Send("fm_tele");
             GUILayout.Space(8);
 
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Следующий этап", btnStyle))
+            if (GUILayout.Button(T("nextstage"), btnStyle))
                 Send("fm_nextstage");
-            if (GUILayout.Button("Перезапустить этап", btnStyle))
+            if (GUILayout.Button(T("restartstage"), btnStyle))
                 Send("fm_restartstage");
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
-            if (GUILayout.Button("+5 минут к таймеру забега", btnStyle))
+            if (GUILayout.Button(T("addtime"), btnStyle))
                 Send("fm_addtime 300");
         }
 
@@ -415,19 +538,19 @@ namespace FirstMod
 
             if (itemList == null || equipList == null)
             {
-                GUILayout.Label("Каталог предметов ещё загружается...", labelStyle);
+                GUILayout.Label(T("cat_items"), labelStyle);
                 return;
             }
 
-            itemMode = GUILayout.Toolbar(itemMode, new[] { "Выдать", "Убрать", "Экипировка" }, tabStyle);
+            itemMode = GUILayout.Toolbar(itemMode, itemModeLabels, tabStyle);
             GUILayout.Space(8);
 
-            forAllPlayers = ToggleButton(forAllPlayers, "Для всех игроков");
+            forAllPlayers = ToggleButton(forAllPlayers, T("for_all_items"));
             GUILayout.Space(8);
 
             // поиск
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Поиск:", labelStyle, GUILayout.Width(80), GUILayout.Height(34));
+            GUILayout.Label(T("search"), labelStyle, GUILayout.Width(80), GUILayout.Height(34));
             itemSearch = GUILayout.TextField(itemSearch ?? "", textStyle, GUILayout.Height(34));
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
@@ -436,7 +559,7 @@ namespace FirstMod
 
             if (itemMode == 2)
             {
-                if (GUILayout.Button("Убрать экипировку", btnStyle))
+                if (GUILayout.Button(T("remove_equip"), btnStyle))
                     Send("fm_equip none " + AllFlag());
                 GUILayout.Space(8);
 
@@ -454,7 +577,7 @@ namespace FirstMod
 
             // количество
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Количество:", labelStyle, GUILayout.Width(120), GUILayout.Height(34));
+            GUILayout.Label(T("amount"), labelStyle, GUILayout.Width(120), GUILayout.Height(34));
             foreach (int a in AmountChoices)
             {
                 if (GUILayout.Button("x" + a, itemAmount == a ? btnOnStyle : btnStyle))
@@ -467,7 +590,7 @@ namespace FirstMod
 
             if (removeMode)
             {
-                if (GUILayout.Button("Очистить инвентарь", btnStyle))
+                if (GUILayout.Button(T("clear_inv"), btnStyle))
                     Send("fm_clearinv " + AllFlag());
                 GUILayout.Space(8);
             }
@@ -501,20 +624,20 @@ namespace FirstMod
 
             if (spawnList == null)
             {
-                GUILayout.Label("Каталог существ ещё загружается...", labelStyle);
+                GUILayout.Label(T("cat_spawn"), labelStyle);
                 return;
             }
 
             // поиск
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Поиск:", labelStyle, GUILayout.Width(80), GUILayout.Height(34));
+            GUILayout.Label(T("search"), labelStyle, GUILayout.Width(80), GUILayout.Height(34));
             spawnSearch = GUILayout.TextField(spawnSearch ?? "", textStyle, GUILayout.Height(34));
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
             // количество
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Количество:", labelStyle, GUILayout.Width(120), GUILayout.Height(34));
+            GUILayout.Label(T("amount"), labelStyle, GUILayout.Width(120), GUILayout.Height(34));
             foreach (int a in SpawnCountChoices)
             {
                 if (GUILayout.Button("x" + a, spawnCount == a ? btnOnStyle : btnStyle))
@@ -523,7 +646,7 @@ namespace FirstMod
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
-            spawnAlly = ToggleButton(spawnAlly, "Спавнить союзниками");
+            spawnAlly = ToggleButton(spawnAlly, T("spawn_ally"));
             GUILayout.Space(8);
 
             string filter = (spawnSearch ?? "").Trim().ToLowerInvariant();
@@ -714,6 +837,16 @@ namespace FirstMod
             return ArgStr(a, i) == "1";
         }
 
+        // Проверка, что команду отправил хост, а не подключившийся клиент с тем же модом.
+        // Работает для типичного случая listen-сервера (хост играет вместе со всеми).
+        // На выделенном (dedicated) сервере локального игрока нет, поэтому такие серверы
+        // здесь всегда трактуются как "не хост" — им это и не нужно, раздавать команды некому.
+        private static bool IsHostSender(ConCommandArgs a)
+        {
+            var hostUser = LocalUserManager.GetFirstLocalUser()?.currentNetworkUser;
+            return hostUser != null && a.sender == hostUser;
+        }
+
         // цели: все игроки или только отправитель команды
         private static List<CharacterMaster> ServerTargets(ConCommandArgs a, bool all)
         {
@@ -777,22 +910,28 @@ namespace FirstMod
         private static void CmdGod(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
-            SetFlag(GodMasters, a, ArgBool(a, 0), ArgBool(a, 1));
+            bool all = ArgBool(a, 1);
+            if (all && !IsHostSender(a)) return; // только хост может выдавать бессмертие всем
+            SetFlag(GodMasters, a, ArgBool(a, 0), all);
         }
 
         // fm_oneshot <0|1> <all>
         private static void CmdOneShot(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
-            SetFlag(OneShotMasters, a, ArgBool(a, 0), ArgBool(a, 1));
+            bool all = ArgBool(a, 1);
+            if (all && !IsHostSender(a)) return;
+            SetFlag(OneShotMasters, a, ArgBool(a, 0), all);
         }
 
         // fm_heal <all>
         private static void CmdHeal(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
+            bool all = ArgBool(a, 0);
+            if (all && !IsHostSender(a)) return;
 
-            foreach (var m in ServerTargets(a, ArgBool(a, 0)))
+            foreach (var m in ServerTargets(a, all))
             {
                 var body = m.GetBody();
                 if (body && body.healthComponent)
@@ -807,8 +946,10 @@ namespace FirstMod
         private static void CmdRevive(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
+            bool all = ArgBool(a, 0);
+            if (all && !IsHostSender(a)) return;
 
-            foreach (var m in ServerTargets(a, ArgBool(a, 0)))
+            foreach (var m in ServerTargets(a, all))
             {
                 if (!m.GetBody())
                     m.Respawn(m.deathFootPosition, Quaternion.identity);
@@ -819,9 +960,11 @@ namespace FirstMod
         private static void CmdMoney(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
+            bool all = ArgBool(a, 1);
+            if (all && !IsHostSender(a)) return;
 
             int amount = Mathf.Max(0, ArgInt(a, 0, 0));
-            foreach (var m in ServerTargets(a, ArgBool(a, 1)))
+            foreach (var m in ServerTargets(a, all))
                 m.GiveMoney((uint)amount);
         }
 
@@ -839,11 +982,14 @@ namespace FirstMod
         {
             if (!NetworkServer.active) return;
 
+            bool all = ArgBool(a, 2);
+            if (all && !IsHostSender(a)) return;
+
             var def = FindItem(ArgStr(a, 0));
             if (!def) return;
 
             int count = Mathf.Clamp(ArgInt(a, 1, 1), 1, 100000);
-            foreach (var m in ServerTargets(a, ArgBool(a, 2)))
+            foreach (var m in ServerTargets(a, all))
             {
                 if (m.inventory) m.inventory.GiveItemPermanent(def, count);
             }
@@ -853,12 +999,14 @@ namespace FirstMod
         private static void CmdTakeItem(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
+            bool all = ArgBool(a, 2);
+            if (all && !IsHostSender(a)) return;
 
             var def = FindItem(ArgStr(a, 0));
             if (!def) return;
 
             int count = Mathf.Clamp(ArgInt(a, 1, 1), 1, 100000);
-            foreach (var m in ServerTargets(a, ArgBool(a, 2)))
+            foreach (var m in ServerTargets(a, all))
             {
                 var inv = m.inventory;
                 if (!inv) continue;
@@ -872,8 +1020,10 @@ namespace FirstMod
         private static void CmdClearInv(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
+            bool all = ArgBool(a, 0);
+            if (all && !IsHostSender(a)) return;
 
-            foreach (var m in ServerTargets(a, ArgBool(a, 0)))
+            foreach (var m in ServerTargets(a, all))
             {
                 var inv = m.inventory;
                 if (!inv) continue;
@@ -893,6 +1043,8 @@ namespace FirstMod
         private static void CmdEquip(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
+            bool all = ArgBool(a, 1);
+            if (all && !IsHostSender(a)) return;
 
             string name = ArgStr(a, 0);
             EquipmentIndex index = EquipmentIndex.None;
@@ -904,7 +1056,7 @@ namespace FirstMod
                 index = def.equipmentIndex;
             }
 
-            foreach (var m in ServerTargets(a, ArgBool(a, 1)))
+            foreach (var m in ServerTargets(a, all))
             {
                 if (m.inventory) m.inventory.SetEquipmentIndex(index);
             }
@@ -913,7 +1065,7 @@ namespace FirstMod
         // fm_killall
         private static void CmdKillAll(ConCommandArgs a)
         {
-            if (!NetworkServer.active) return;
+            if (!NetworkServer.active || !IsHostSender(a)) return;
 
             var victims = new List<HealthComponent>();
             foreach (var team in new[] { TeamIndex.Monster, TeamIndex.Lunar, TeamIndex.Void })
@@ -932,7 +1084,7 @@ namespace FirstMod
         // fm_tele
         private static void CmdTele(ConCommandArgs a)
         {
-            if (!NetworkServer.active) return;
+            if (!NetworkServer.active || !IsHostSender(a)) return;
 
             var tele = TeleporterInteraction.instance;
             var zone = tele ? tele.holdoutZoneController : null;
@@ -957,7 +1109,7 @@ namespace FirstMod
         // fm_nextstage
         private static void CmdNextStage(ConCommandArgs a)
         {
-            if (!NetworkServer.active) return;
+            if (!NetworkServer.active || !IsHostSender(a)) return;
 
             var run = Run.instance;
             if (run && run.nextStageScene)
@@ -967,7 +1119,7 @@ namespace FirstMod
         // fm_restartstage
         private static void CmdRestartStage(ConCommandArgs a)
         {
-            if (!NetworkServer.active) return;
+            if (!NetworkServer.active || !IsHostSender(a)) return;
 
             var run = Run.instance;
             var scene = SceneCatalog.GetSceneDefForCurrentScene();
@@ -978,16 +1130,19 @@ namespace FirstMod
         // fm_addtime <seconds>
         private static void CmdAddTime(ConCommandArgs a)
         {
-            if (!NetworkServer.active) return;
+            if (!NetworkServer.active || !IsHostSender(a)) return;
 
             var run = Run.instance;
             if (run) run.SetRunStopwatch(run.GetRunStopwatch() + ArgInt(a, 0, 0));
         }
 
         // fm_spawn <masterName> <count> <ally 0|1>  (спавнит рядом с отправителем)
+        // враждебных существ может заспавнить только хост, союзников - любой игрок себе
         private static void CmdSpawn(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
+            bool ally = ArgBool(a, 2);
+            if (!ally && !IsHostSender(a)) return;
 
             var prefab = FindMaster(ArgStr(a, 0));
             if (!prefab) return;
@@ -997,7 +1152,6 @@ namespace FirstMod
             if (!body) return;
 
             int count = Mathf.Clamp(ArgInt(a, 1, 1), 1, 100);
-            bool ally = ArgBool(a, 2);
 
             Vector3 forward = body.transform.forward;
             forward.y = 0f;
@@ -1142,19 +1296,33 @@ namespace FirstMod
         // ---------- Стили и виджеты ----------
         private static Texture2D MakeTex(Color c)
         {
-            var t = new Texture2D(1, 1);
+            var t = new Texture2D(1, 1) { hideFlags = HideFlags.HideAndDontSave };
             t.SetPixel(0, 0, c);
             t.Apply();
-            t.hideFlags = HideFlags.HideAndDontSave;
+            generatedTextures.Add(t);
+            return t;
+        }
+
+        // вертикальный градиент для более "живого" вида окна и кнопок
+        private static Texture2D MakeGradientTex(Color top, Color bottom, int height = 48)
+        {
+            var t = new Texture2D(1, height) { hideFlags = HideFlags.HideAndDontSave, wrapMode = TextureWrapMode.Clamp };
+            for (int y = 0; y < height; y++)
+                t.SetPixel(0, y, Color.Lerp(bottom, top, y / (float)(height - 1)));
+            t.Apply();
+            generatedTextures.Add(t);
             return t;
         }
 
         private void InitStyles()
         {
-            var bg = MakeTex(new Color(0.09f, 0.09f, 0.11f, 0.97f));
-            var btn = MakeTex(new Color(0.18f, 0.18f, 0.22f));
-            var btnHov = MakeTex(new Color(0.26f, 0.26f, 0.32f));
-            var accent = MakeTex(new Color(0.20f, 0.55f, 0.95f));
+            // тёмно-фиолетовый фон окна с лёгким градиентом сверху вниз
+            var bg = MakeGradientTex(new Color(0.15f, 0.11f, 0.22f, 0.97f), new Color(0.06f, 0.05f, 0.09f, 0.97f));
+            var btn = MakeGradientTex(new Color(0.22f, 0.20f, 0.28f), new Color(0.15f, 0.14f, 0.19f));
+            var btnHov = MakeGradientTex(new Color(0.30f, 0.28f, 0.38f), new Color(0.22f, 0.21f, 0.28f));
+            // фиолетово-синий градиент для активных элементов (акцент)
+            var accent = MakeGradientTex(new Color(0.55f, 0.40f, 0.95f), new Color(0.25f, 0.50f, 0.95f));
+            var accentHov = MakeGradientTex(new Color(0.62f, 0.48f, 1f), new Color(0.32f, 0.58f, 1f));
 
             windowStyle = new GUIStyle(GUI.skin.window)
             {
@@ -1173,11 +1341,11 @@ namespace FirstMod
 
             btnOnStyle = new GUIStyle(btnStyle);
             btnOnStyle.normal.background = accent;
-            btnOnStyle.hover.background = accent;
+            btnOnStyle.hover.background = accentHov;
 
             tabStyle = new GUIStyle(btnStyle) { fixedHeight = 34 };
             tabStyle.onNormal.background = accent;
-            tabStyle.onHover.background = accent;
+            tabStyle.onHover.background = accentHov;
             tabStyle.onNormal.textColor = tabStyle.onHover.textColor = Color.white;
 
             labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 16, alignment = TextAnchor.MiddleLeft };
@@ -1186,12 +1354,16 @@ namespace FirstMod
             warnStyle = new GUIStyle(labelStyle) { alignment = TextAnchor.MiddleCenter };
             warnStyle.normal.textColor = new Color(1f, 0.75f, 0.3f);
 
+            footerStyle = new GUIStyle(labelStyle) { alignment = TextAnchor.MiddleCenter, fontSize = 13 };
+            footerStyle.normal.textColor = new Color(0.55f, 0.52f, 0.65f);
+
             textStyle = new GUIStyle(GUI.skin.textField) { fontSize = 16, alignment = TextAnchor.MiddleLeft };
             textStyle.normal.background = btn;
             textStyle.hover.background = btnHov;
             textStyle.focused.background = btnHov;
             textStyle.normal.textColor = textStyle.hover.textColor = textStyle.focused.textColor = Color.white;
 
+            RebuildLabels();
             stylesReady = true;
         }
 
