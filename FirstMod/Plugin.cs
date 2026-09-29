@@ -10,7 +10,7 @@ using UnityEngine.Networking;
 
 namespace FirstMod
 {
-    [BepInPlugin("com.Kavoshnik.firstmod", "FirstMod", "0.5.0")]
+    [BepInPlugin("com.Kavoshnik.firstmod", "FirstMod", "0.6.0")]
     public class Plugin : BaseUnityPlugin
     {
         // ---------- Состояние (клиентская часть) ----------
@@ -1529,9 +1529,48 @@ namespace FirstMod
             if ((current.footPosition - footPosition).sqrMagnitude < 4f * 4f) yield break; // телепорт сработал
 
             Logger.LogInfo("fm_tp: штатный телепорт не сработал, пересоздаю игрока в точке назначения.");
+
+            // запоминаем состояние здоровья: новое тело рождается с полным хп
+            var oldHc = current.healthComponent;
+            float oldFull = oldHc ? oldHc.fullHealth : 0f;
+            float hpFrac = oldFull > 0f ? Mathf.Clamp01(oldHc.health / oldFull) : 1f;
+            float barrierFrac = oldFull > 0f ? oldHc.barrier / oldFull : 0f;
+            float oldFullShield = oldHc ? oldHc.fullShield : 0f;
+            float shieldFrac = oldFullShield > 0f ? Mathf.Clamp01(oldHc.shield / oldFullShield) : 1f;
+
             Quaternion rot = Quaternion.Euler(0f, current.transform.eulerAngles.y, 0f);
             master.DestroyBody();
             master.Respawn(footPosition, rot);
+
+            // ждём, пока у нового тела посчитаются статы (макс. хп), и возвращаем прежнюю долю хп
+            CharacterBody fresh = null;
+            for (int i = 0; i < 20; i++)
+            {
+                yield return new WaitForSeconds(0.05f);
+                if (!master) yield break;
+                fresh = master.GetBody();
+                if (fresh && fresh.healthComponent && fresh.healthComponent.fullHealth >= oldFull * 0.95f) break;
+            }
+            if (!fresh || !fresh.healthComponent) yield break;
+
+            var hc = fresh.healthComponent;
+            SetHealthValue(hc, "health", Mathf.Max(1f, hpFrac * hc.fullHealth));
+            if (hc.fullShield > 0f) SetHealthValue(hc, "shield", shieldFrac * hc.fullShield);
+            if (barrierFrac > 0f) SetHealthValue(hc, "barrier", barrierFrac * hc.fullHealth);
+        }
+
+        // health/shield/barrier у HealthComponent наружу только читаются; пишем через SyncVar-свойство
+        // (Network<имя>), чтобы значение ушло клиентам, а если его нет - через обычное поле/свойство.
+        private static void SetHealthValue(HealthComponent hc, string name, float value)
+        {
+            var t = typeof(HealthComponent);
+
+            var prop = t.GetProperty("Network" + name, Flags) ?? t.GetProperty(name, Flags);
+            var setter = prop != null ? prop.GetSetMethod(true) : null;
+            if (setter != null) { setter.Invoke(hc, new object[] { value }); return; }
+
+            var field = t.GetField("_" + name, Flags) ?? t.GetField(name, Flags);
+            if (field != null && field.FieldType == typeof(float)) field.SetValue(hc, value);
         }
 
         private static MethodInfo teleportBodyMethod;
