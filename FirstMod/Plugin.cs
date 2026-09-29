@@ -44,6 +44,8 @@ namespace FirstMod
             public ItemDef def;
             public string name;
             public string lower;
+            public int order;    // порядок редкости: 0 белый, 1 зелёный, 2 красный, 3 лунный, 4 босс, 5-8 войд
+            public Color color;  // цвет редкости для плитки
         }
 
         private struct EquipEntry
@@ -51,6 +53,8 @@ namespace FirstMod
             public EquipmentDef def;
             public string name;
             public string lower;
+            public int order;
+            public Color color;
         }
 
         private List<ItemEntry> itemList;
@@ -59,6 +63,13 @@ namespace FirstMod
         private string itemSearch = "";
         private int itemAmount = 1;
         private Vector2 itemScroll;
+        private bool itemTiles = true;      // плитки с иконками или обычный список
+        private int itemRarity;             // 0 = все, 1..6 = фильтр по редкости
+        private string hoverNow, hoverShown; // имя под курсором (показываем с задержкой в кадр)
+        private float tileViewHeight;       // высота видимой области прокрутки (чтобы не ловить наведение вне неё)
+        private const float TileSize = 64f;
+        private const float TileGap = 6f;
+        private const float ItemsColumnWidth = 1120f;
         private static readonly int[] AmountChoices = { 1, 5, 25, 100 };
 
         // Спавн
@@ -103,7 +114,7 @@ namespace FirstMod
         private Rect windowRect;
         private bool stylesReady;
         private GUIStyle windowStyle, btnStyle, btnOnStyle, tabStyle, labelStyle, warnStyle, textStyle, footerStyle;
-        private GUIStyle sliderStyle, sliderThumbStyle, sliderTrackStyle, sliderFillStyle;
+        private GUIStyle sliderStyle, sliderThumbStyle, sliderTrackStyle, sliderFillStyle, tileBadgeStyle;
 
         // ---------- Состояние (серверная часть) ----------
         // кто бессмертен / кто убивает с одного удара (хранится только на сервере)
@@ -114,6 +125,7 @@ namespace FirstMod
         private static readonly List<Texture2D> generatedTextures = new List<Texture2D>();
 
         private bool commandsRegistered;
+        private static Plugin instance; // нужен серверным командам, чтобы запускать корутины и писать в лог
 
         // ---------- Локализация ----------
         private enum Lang { RU, EN }
@@ -127,6 +139,7 @@ namespace FirstMod
             { "tab_world",      new[] { "Мир", "World" } },
             { "tab_items",      new[] { "Предметы", "Items" } },
             { "tab_spawn",      new[] { "Спавн", "Spawn" } },
+            { "tab_players",    new[] { "Игроки", "Players" } },
             { "tab_settings",   new[] { "Настройки", "Settings" } },
 
             { "warn_client",    new[] { "Вы клиент: серверные функции сработают, только если мод установлен и у хоста",
@@ -175,6 +188,21 @@ namespace FirstMod
 
             { "spawn_ally",     new[] { "Спавнить союзниками", "Spawn as Allies" } },
 
+            { "view_tiles",     new[] { "Плитки", "Tiles" } },
+            { "r_all",          new[] { "Все", "All" } },
+            { "r_white",        new[] { "Белые", "White" } },
+            { "r_green",        new[] { "Зелёные", "Green" } },
+            { "r_red",          new[] { "Красные", "Red" } },
+            { "r_lunar",        new[] { "Лунные", "Lunar" } },
+            { "r_boss",         new[] { "Боссы", "Boss" } },
+            { "r_void",         new[] { "Войд", "Void" } },
+
+            { "no_players",     new[] { "Других игроков нет", "No other players" } },
+            { "tp_bring",       new[] { "К себе", "Bring to me" } },
+            { "tp_goto",        new[] { "К нему", "Go to them" } },
+            { "tp_note",        new[] { "«К нему» работает у любого игрока, «К себе» - только у хоста.",
+                                         "\"Go to them\" works for any player, \"Bring to me\" only for the host." } },
+
             { "settings_lang",  new[] { "Язык интерфейса", "Interface Language" } },
         };
 
@@ -187,20 +215,26 @@ namespace FirstMod
 
         private string[] tabLabels;
         private string[] itemModeLabels;
+        private string[] rarityLabels;
 
         private void RebuildLabels()
         {
             tabLabels = new[]
             {
                 T("tab_player"), T("tab_movement"), T("tab_combat"),
-                T("tab_world"), T("tab_items"), T("tab_spawn"), T("tab_settings")
+                T("tab_world"), T("tab_items"), T("tab_spawn"), T("tab_players"), T("tab_settings")
             };
             itemModeLabels = new[] { T("itemmode_give"), T("itemmode_take"), T("itemmode_equip") };
+            rarityLabels = new[]
+            {
+                T("r_all"), T("r_white"), T("r_green"), T("r_red"), T("r_lunar"), T("r_boss"), T("r_void")
+            };
         }
 
         // ---------- Инициализация ----------
         private void Awake()
         {
+            instance = this;
             Logger.LogInfo("FirstMod loaded!");
 
             On.RoR2.HealthComponent.TakeDamage += OnTakeDamage;
@@ -221,6 +255,7 @@ namespace FirstMod
             On.RoR2.HealthComponent.TakeDamage -= OnTakeDamage;
             On.RoR2.CharacterBody.RecalculateStats -= OnRecalculateStats;
             RoR2Application.onLoad -= RegisterCommands;
+            if (instance == this) instance = null;
             Run.onRunStartGlobal -= OnRunChangedGlobal;
             Run.onRunDestroyGlobal -= OnRunChangedGlobal;
 
@@ -422,7 +457,7 @@ namespace FirstMod
             // центральная колонка, чтобы кнопки не растягивались на всё окно
             GUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
-            GUILayout.BeginVertical(GUILayout.Width(Mathf.Min(760f, windowRect.width - 80f)));
+            GUILayout.BeginVertical(GUILayout.Width(Mathf.Min(tab == 4 ? ItemsColumnWidth : 760f, windowRect.width - 80f)));
 
             switch (tab)
             {
@@ -432,7 +467,8 @@ namespace FirstMod
                 case 3: DrawWorldTab(); break;
                 case 4: DrawItemsTab(); break;
                 case 5: DrawSpawnTab(); break;
-                case 6: DrawSettingsTab(); break;
+                case 6: DrawPlayersTab(); break;
+                case 7: DrawSettingsTab(); break;
             }
 
             GUILayout.EndVertical();
@@ -466,6 +502,44 @@ namespace FirstMod
 
             GUILayout.FlexibleSpace();
             GUILayout.Label("FirstMod by Kavoshnik", footerStyle);
+        }
+
+        private void DrawPlayersTab()
+        {
+            var me = LocalUserManager.GetFirstLocalUser()?.currentNetworkUser;
+            int shown = 0;
+
+            foreach (var user in NetworkUser.readOnlyInstancesList)
+            {
+                if (!user || user == me) continue;
+                shown++;
+
+                string name = user.userName;
+                if (string.IsNullOrEmpty(name)) name = "Player " + shown;
+
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(name, labelStyle, GUILayout.Height(38));
+
+                // "к себе" двигает другого игрока - это может только хост (проверяется и на сервере)
+                bool prev = GUI.enabled;
+                GUI.enabled = prev && NetworkServer.active;
+                if (GUILayout.Button(T("tp_bring"), btnStyle, GUILayout.Width(160)))
+                    Send("fm_tp 0 " + user.netId.Value);
+                GUI.enabled = prev;
+
+                if (GUILayout.Button(T("tp_goto"), btnStyle, GUILayout.Width(160)))
+                    Send("fm_tp 1 " + user.netId.Value);
+                GUILayout.EndHorizontal();
+                GUILayout.Space(6);
+            }
+
+            if (shown == 0)
+                GUILayout.Label(T("no_players"), labelStyle);
+            else
+            {
+                GUILayout.Space(4);
+                GUILayout.Label(T("tp_note"), labelStyle);
+            }
         }
 
         private void DrawPlayerTab()
@@ -597,20 +671,42 @@ namespace FirstMod
                 return;
             }
 
-            itemMode = GUILayout.Toolbar(itemMode, itemModeLabels, tabStyle);
+            // имя под курсором берём с прошлой отрисовки (IMGUI сначала рисует плитки, потом узнаёт про наведение)
+            if (Event.current.type == EventType.Repaint)
+            {
+                hoverShown = hoverNow;
+                hoverNow = null;
+            }
+
+            GUILayout.BeginHorizontal();
+            itemMode = GUILayout.Toolbar(itemMode, itemModeLabels, tabStyle, GUILayout.Width(420));
+            if (itemMode != 2)
+            {
+                GUILayout.Space(8);
+                itemRarity = GUILayout.Toolbar(itemRarity, rarityLabels, tabStyle);
+            }
+            GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
-            forAllPlayers = ToggleButton(forAllPlayers, T("for_all_items"));
+            GUILayout.BeginHorizontal();
+            forAllPlayers = ToggleButton(forAllPlayers, T("for_all_items"), GUILayout.Width(380));
+            GUILayout.Space(12);
+            GUILayout.Label(string.IsNullOrEmpty(hoverShown) ? " " : hoverShown, labelStyle, GUILayout.Height(38));
+            GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
-            // поиск
+            // поиск + переключатель вида
             GUILayout.BeginHorizontal();
             GUILayout.Label(T("search"), labelStyle, GUILayout.Width(80), GUILayout.Height(34));
             itemSearch = GUILayout.TextField(itemSearch ?? "", textStyle, GUILayout.Height(34));
+            GUILayout.Space(8);
+            itemTiles = ToggleButton(itemTiles, T("view_tiles"), GUILayout.Width(200));
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
             string filter = (itemSearch ?? "").Trim().ToLowerInvariant();
+            int cols = TileColumns();
+            int col = 0;
 
             if (itemMode == 2)
             {
@@ -618,14 +714,23 @@ namespace FirstMod
                     Send("fm_equip none " + AllFlag());
                 GUILayout.Space(8);
 
-                itemScroll = GUILayout.BeginScrollView(itemScroll, GUILayout.Height(ListHeight(430f)));
+                tileViewHeight = ListHeight(430f);
+                itemScroll = GUILayout.BeginScrollView(itemScroll, GUILayout.Height(tileViewHeight));
                 foreach (var entry in equipList)
                 {
                     if (filter.Length > 0 && !entry.lower.Contains(filter)) continue;
 
-                    if (GUILayout.Button(entry.name, btnStyle))
+                    if (itemTiles)
+                    {
+                        if (col == 0) GUILayout.BeginHorizontal();
+                        if (DrawTile(entry.def.pickupIconSprite, entry.color, entry.name, -1))
+                            Send("fm_equip " + entry.def.name + " " + AllFlag());
+                        if (++col >= cols) { GUILayout.EndHorizontal(); GUILayout.Space(TileGap); col = 0; }
+                    }
+                    else if (GUILayout.Button(entry.name, btnStyle))
                         Send("fm_equip " + entry.def.name + " " + AllFlag());
                 }
+                if (itemTiles && col > 0) GUILayout.EndHorizontal();
                 GUILayout.EndScrollView();
                 return;
             }
@@ -659,23 +764,129 @@ namespace FirstMod
             var localMaster = GetMaster();
             var inv = localMaster ? localMaster.inventory : null;
 
-            itemScroll = GUILayout.BeginScrollView(itemScroll, GUILayout.Height(ListHeight(removeMode ? 480f : 430f)));
+            tileViewHeight = ListHeight(removeMode ? 480f : 430f);
+            itemScroll = GUILayout.BeginScrollView(itemScroll, GUILayout.Height(tileViewHeight));
             foreach (var entry in itemList)
             {
                 if (filter.Length > 0 && !entry.lower.Contains(filter)) continue;
+                if (!RarityMatch(itemRarity, entry.order)) continue;
 
                 int have = inv ? inv.GetItemCount(entry.def) : 0;
                 if (removeMode && have <= 0) continue;
 
-                string label = removeMode ? entry.name + "  (x" + have + ")" : entry.name;
+                bool clicked;
+                if (itemTiles)
+                {
+                    if (col == 0) GUILayout.BeginHorizontal();
+                    clicked = DrawTile(entry.def.pickupIconSprite, entry.color, entry.name, have > 0 ? have : -1);
+                    if (++col >= cols) { GUILayout.EndHorizontal(); GUILayout.Space(TileGap); col = 0; }
+                }
+                else
+                {
+                    string label = removeMode ? entry.name + "  (x" + have + ")" : entry.name;
+                    clicked = GUILayout.Button(label, btnStyle);
+                }
 
-                if (GUILayout.Button(label, btnStyle))
+                if (clicked)
                 {
                     string verb = removeMode ? "fm_takeitem " : "fm_giveitem ";
                     Send(verb + entry.def.name + " " + itemAmount + " " + AllFlag());
                 }
             }
+            if (itemTiles && col > 0) GUILayout.EndHorizontal();
             GUILayout.EndScrollView();
+        }
+
+        // ---------- Плитки с иконками ----------
+        private static void TierInfo(string tier, out int order, out Color color)
+        {
+            // по имени, а не по enum: часть тиров (Void*) есть только в DLC-версиях игры
+            switch (tier)
+            {
+                case "Tier1":     order = 0; color = new Color(0.78f, 0.78f, 0.80f); break;
+                case "Tier2":     order = 1; color = new Color(0.30f, 0.85f, 0.30f); break;
+                case "Tier3":     order = 2; color = new Color(0.92f, 0.25f, 0.22f); break;
+                case "Lunar":     order = 3; color = new Color(0.35f, 0.60f, 1f);    break;
+                case "Boss":      order = 4; color = new Color(1f, 0.90f, 0.25f);    break;
+                case "VoidTier1": order = 5; color = new Color(0.75f, 0.45f, 1f);    break;
+                case "VoidTier2": order = 6; color = new Color(0.75f, 0.45f, 1f);    break;
+                case "VoidTier3": order = 7; color = new Color(0.75f, 0.45f, 1f);    break;
+                case "VoidBoss":  order = 8; color = new Color(0.75f, 0.45f, 1f);    break;
+                default:          order = 9; color = new Color(0.6f, 0.6f, 0.6f);    break;
+            }
+        }
+
+        // фильтр: 0 = все, 1..5 = белые/зелёные/красные/лунные/боссы, 6 = все войд-тиры
+        private static bool RarityMatch(int filter, int order)
+        {
+            if (filter == 0) return true;
+            if (filter <= 5) return order == filter - 1;
+            return order >= 5 && order <= 8;
+        }
+
+        private int TileColumns()
+        {
+            float colWidth = Mathf.Min(ItemsColumnWidth, windowRect.width - 80f);
+            // запас под полосу прокрутки
+            return Mathf.Max(1, (int)((colWidth - 30f) / (TileSize + TileGap)));
+        }
+
+        private static void FillRect(Rect r, Color c)
+        {
+            Color prev = GUI.color;
+            GUI.color = c;
+            GUI.DrawTexture(r, Texture2D.whiteTexture);
+            GUI.color = prev;
+        }
+
+        private static void DrawSprite(Rect r, Sprite sp)
+        {
+            if (!sp || !sp.texture) return;
+            Texture2D tex = sp.texture;
+            Rect tr = sp.textureRect; // иконка может лежать в атласе
+            GUI.DrawTextureWithTexCoords(r, tex,
+                new Rect(tr.x / tex.width, tr.y / tex.height, tr.width / tex.width, tr.height / tex.height));
+        }
+
+        // Одна плитка: фон и рамка цвета редкости, иконка, число (если count > 0). true = клик.
+        private bool DrawTile(Sprite icon, Color tier, string name, int count)
+        {
+            Rect r = GUILayoutUtility.GetRect(TileSize, TileSize, GUILayout.Width(TileSize), GUILayout.Height(TileSize));
+            GUILayout.Space(TileGap);
+
+            Vector2 mouse = Event.current.mousePosition;
+            bool inView = mouse.y >= itemScroll.y && mouse.y <= itemScroll.y + tileViewHeight;
+            bool hover = inView && r.Contains(mouse);
+
+            if (Event.current.type == EventType.Repaint)
+            {
+                if (hover) hoverNow = name;
+
+                float k = hover ? 0.50f : 0.32f;
+                FillRect(r, new Color(tier.r * k, tier.g * k, tier.b * k, 1f));
+
+                Color border = hover ? Color.white : new Color(tier.r, tier.g, tier.b, 0.9f);
+                FillRect(new Rect(r.x, r.y, r.width, 2f), border);
+                FillRect(new Rect(r.x, r.yMax - 2f, r.width, 2f), border);
+                FillRect(new Rect(r.x, r.y, 2f, r.height), border);
+                FillRect(new Rect(r.xMax - 2f, r.y, 2f, r.height), border);
+
+                var iconRect = new Rect(r.x + 5f, r.y + 5f, r.width - 10f, r.height - 10f);
+                if (icon) DrawSprite(iconRect, icon);
+                else GUI.Label(r, string.IsNullOrEmpty(name) ? "?" : name.Substring(0, 1), warnStyle);
+
+                if (count > 0)
+                {
+                    var badge = new Rect(r.x, r.y, r.width - 4f, r.height - 2f);
+                    string txt = "x" + count;
+                    tileBadgeStyle.normal.textColor = Color.black;
+                    GUI.Label(new Rect(badge.x + 1f, badge.y + 1f, badge.width, badge.height), txt, tileBadgeStyle);
+                    tileBadgeStyle.normal.textColor = Color.white;
+                    GUI.Label(badge, txt, tileBadgeStyle);
+                }
+            }
+
+            return GUI.Button(r, GUIContent.none, GUIStyle.none);
         }
 
         private void DrawSpawnTab()
@@ -745,9 +956,15 @@ namespace FirstMod
                 string itemName = Language.GetString(def.nameToken);
                 if (string.IsNullOrEmpty(itemName)) itemName = def.name;
 
-                list.Add(new ItemEntry { def = def, name = itemName, lower = itemName.ToLowerInvariant() });
+                int order; Color color;
+                TierInfo(def.tier.ToString(), out order, out color);
+
+                list.Add(new ItemEntry { def = def, name = itemName, lower = itemName.ToLowerInvariant(), order = order, color = color });
             }
-            list.Sort((a, b) => string.Compare(a.name, b.name, StringComparison.CurrentCultureIgnoreCase));
+            // как в журнале: сначала по редкости, внутри редкости по алфавиту
+            list.Sort((a, b) => a.order != b.order
+                ? a.order.CompareTo(b.order)
+                : string.Compare(a.name, b.name, StringComparison.CurrentCultureIgnoreCase));
             itemList = list;
         }
 
@@ -764,9 +981,16 @@ namespace FirstMod
                 string equipName = Language.GetString(def.nameToken);
                 if (string.IsNullOrEmpty(equipName)) equipName = def.name;
 
-                list.Add(new EquipEntry { def = def, name = equipName, lower = equipName.ToLowerInvariant() });
+                int order = def.isLunar ? 2 : (def.isBoss ? 1 : 0);
+                Color color = def.isLunar ? new Color(0.35f, 0.60f, 1f)
+                            : def.isBoss ? new Color(1f, 0.90f, 0.25f)
+                            : new Color(1f, 0.60f, 0.20f);
+
+                list.Add(new EquipEntry { def = def, name = equipName, lower = equipName.ToLowerInvariant(), order = order, color = color });
             }
-            list.Sort((a, b) => string.Compare(a.name, b.name, StringComparison.CurrentCultureIgnoreCase));
+            list.Sort((a, b) => a.order != b.order
+                ? a.order.CompareTo(b.order)
+                : string.Compare(a.name, b.name, StringComparison.CurrentCultureIgnoreCase));
             equipList = list;
         }
 
@@ -825,6 +1049,7 @@ namespace FirstMod
             new[] { "fm_restartstage","CmdRestartStage" },
             new[] { "fm_addtime",     "CmdAddTime" },
             new[] { "fm_spawn",       "CmdSpawn" },
+            new[] { "fm_tp",          "CmdTp" },
         };
 
         private void RegisterCommands()
@@ -1241,6 +1466,110 @@ namespace FirstMod
             }
         }
 
+        // fm_tp <mode> <netId>
+        // mode 0: телепортировать игрока с этим netId к отправителю (только хост)
+        // mode 1: телепортировать отправителя к игроку с этим netId (любой игрок)
+        private static void CmdTp(ConCommandArgs a)
+        {
+            if (!NetworkServer.active || !a.sender) return;
+
+            int mode = ArgInt(a, 0, -1);
+            if (mode != 0 && mode != 1) return;
+            if (mode == 0 && !IsHostSender(a))
+            {
+                if (instance) instance.Logger.LogInfo("fm_tp: 'к себе' разрешено только хосту.");
+                return;
+            }
+
+            uint id;
+            if (!uint.TryParse(ArgStr(a, 1), NumberStyles.None, CultureInfo.InvariantCulture, out id)) return;
+
+            NetworkUser target = null;
+            foreach (var u in NetworkUser.readOnlyInstancesList)
+            {
+                if (u && u.netId.Value == id) { target = u; break; }
+            }
+            if (!target || target == a.sender) return;
+
+            var senderBody = a.sender.master ? a.sender.master.GetBody() : null;
+            var targetBody = target.master ? target.master.GetBody() : null;
+            if (!senderBody || !targetBody)
+            {
+                if (instance) instance.Logger.LogInfo("fm_tp: у одного из игроков нет тела (мёртв?).");
+                return; // кто-то мёртв - телепортировать некого
+            }
+
+            if (mode == 0) TeleportBodyTo(targetBody, senderBody.footPosition + Vector3.up * 0.5f);
+            else TeleportBodyTo(senderBody, targetBody.footPosition + Vector3.up * 0.5f);
+        }
+
+        // Тело клиента управляется его собственным клиентом (мотор с "авторитетом" клиента),
+        // поэтому серверный телепорт может тихо не сработать или тут же откатиться.
+        // Телепортируем штатно, через полсекунды проверяем результат и, если тело осталось далеко,
+        // пересоздаём игрока сразу в нужной точке (Respawn работает на сервере и не требует мода у клиента).
+        private static void TeleportBodyTo(CharacterBody body, Vector3 footPosition)
+        {
+            if (!body) return;
+
+            RawTeleport(body, footPosition);
+
+            var master = body.master;
+            if (instance && master)
+                instance.StartCoroutine(instance.VerifyTeleport(master, footPosition));
+        }
+
+        private IEnumerator VerifyTeleport(CharacterMaster master, Vector3 footPosition)
+        {
+            yield return new WaitForSeconds(0.5f);
+
+            if (!master) yield break;
+            var current = master.GetBody();
+            if (!current) yield break; // умер или уже пересоздан
+
+            if ((current.footPosition - footPosition).sqrMagnitude < 4f * 4f) yield break; // телепорт сработал
+
+            Logger.LogInfo("fm_tp: штатный телепорт не сработал, пересоздаю игрока в точке назначения.");
+            Quaternion rot = Quaternion.Euler(0f, current.transform.eulerAngles.y, 0f);
+            master.DestroyBody();
+            master.Respawn(footPosition, rot);
+        }
+
+        private static MethodInfo teleportBodyMethod;
+        private static bool teleportLookedUp;
+
+        // Сначала пробуем штатный TeleportHelper.TeleportBody (он умеет двигать и клиентов),
+        // через рефлексию, чтобы не зависеть от версии игры. Запасной путь - прямой SetPosition мотора.
+        private static void RawTeleport(CharacterBody body, Vector3 footPosition)
+        {
+            if (!body) return;
+
+            if (!teleportLookedUp)
+            {
+                teleportLookedUp = true;
+                var helper = typeof(CharacterBody).Assembly.GetType("RoR2.TeleportHelper");
+                if (helper != null)
+                    teleportBodyMethod = helper.GetMethod("TeleportBody",
+                        BindingFlags.Public | BindingFlags.Static, null,
+                        new[] { typeof(CharacterBody), typeof(Vector3) }, null);
+            }
+
+            if (teleportBodyMethod != null)
+            {
+                teleportBodyMethod.Invoke(null, new object[] { body, footPosition });
+                return;
+            }
+
+            Vector3 pos = footPosition + (body.transform.position - body.footPosition);
+            var cm = GetMotorComponent(body);
+            object motor = cm ? GetKinematicMotor(cm) : null;
+            if (motor != null)
+            {
+                var setPos = motor.GetType().GetMethod("SetPosition", new[] { typeof(Vector3), typeof(bool) });
+                if (setPos != null) { setPos.Invoke(motor, new object[] { pos, true }); return; }
+            }
+            body.transform.position = pos;
+        }
+
         // ---------- Noclip ----------
         // Мотор персонажа - это KinematicCharacterMotor из отдельной сборки.
         // Чтобы не добавлять ещё одну ссылку в проект, вызываем его методы через рефлексию.
@@ -1480,6 +1809,9 @@ namespace FirstMod
             textStyle.normal.textColor = textStyle.hover.textColor = textStyle.focused.textColor = Color.white;
 
             // ----- слайдер: тёмный трек, акцентная заливка до значения, круглый ползунок -----
+            tileBadgeStyle = new GUIStyle(labelStyle) { fontSize = 13, fontStyle = FontStyle.Bold, alignment = TextAnchor.LowerRight };
+            tileBadgeStyle.normal.textColor = Color.white;
+
             var trackTex = MakeRoundedTex(new Color(0.07f, 0.06f, 0.11f), new Color(0.14f, 0.13f, 0.19f));
             var fillTex = MakeRoundedTex(new Color(0.55f, 0.40f, 0.95f), new Color(0.25f, 0.50f, 0.95f));
             var thumbTex = MakeCircleTex(new Color(0.42f, 0.45f, 0.96f));
