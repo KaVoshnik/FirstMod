@@ -76,9 +76,34 @@ namespace FirstMod
         private Vector2 spawnScroll;
         private static readonly int[] SpawnCountChoices = { 1, 5, 10, 25 };
 
+        // Свои значения количества (текстовые поля рядом с пресетами)
+        private string itemAmountText = "1";
+        private string spawnCountText = "1";
+
+        // Поля ввода на вкладках «Игрок» и «Мир» (хранятся строкой, парсятся по кнопке)
+        private string moneyText = "1000";
+        private string lunarText = "10";
+        private string timerMinText = "5";
+        private string timerSecText = "0";
+
+        // Верхние safety-капы для ручного ввода (слайдеры остаются в своих "разумных" диапазонах).
+        // ВАЖНО: GameSpeedMax нужно проверить в игре - на больших timeScale физика может ломаться.
+        private const float MoveSpeedMax = 100f;
+        private const float FlySpeedMax = 100f;
+        private const float AttackSpeedMax = 1000f;
+        private const float GameSpeedMax = 1000f;
+        private const int ItemAmountMax = 100000;  // сервер клэмпит так же
+        private const int SpawnCountMax = 100;     // сервер клэмпит так же
+
+        // Буферы редактирования числовых полей: пока пользователь печатает, значение
+        // живёт тут как строка и применяется только по Enter / потере фокуса.
+        private readonly Dictionary<string, string> numBuf = new Dictionary<string, string>();
+        private string numEditing;
+
         private Rect windowRect;
         private bool stylesReady;
         private GUIStyle windowStyle, btnStyle, btnOnStyle, tabStyle, labelStyle, warnStyle, textStyle, footerStyle;
+        private GUIStyle sliderStyle, sliderThumbStyle, sliderTrackStyle, sliderFillStyle;
 
         // ---------- Состояние (серверная часть) ----------
         // кто бессмертен / кто убивает с одного удара (хранится только на сервере)
@@ -111,8 +136,9 @@ namespace FirstMod
             { "for_all",        new[] { "Действия для всех игроков", "Apply to all players" } },
             { "heal",           new[] { "Лечить", "Heal" } },
             { "revive",         new[] { "Воскресить", "Revive" } },
-            { "money",          new[] { "+1000 денег", "+1000 Money" } },
-            { "lunar",          new[] { "+10 лунных монет", "+10 Lunar Coins" } },
+            { "money_label",    new[] { "Деньги:", "Money:" } },
+            { "lunar_label",    new[] { "Лунные монеты:", "Lunar Coins:" } },
+            { "give",           new[] { "Выдать", "Give" } },
 
             { "move_speed",     new[] { "Скорость игрока", "Move Speed" } },
             { "inf_jumps",      new[] { "Бесконечные прыжки", "Infinite Jumps" } },
@@ -131,7 +157,10 @@ namespace FirstMod
             { "tele",           new[] { "Мгновенно зарядить телепорт", "Instantly Charge Teleporter" } },
             { "nextstage",      new[] { "Следующий этап", "Next Stage" } },
             { "restartstage",   new[] { "Перезапустить этап", "Restart Stage" } },
-            { "addtime",        new[] { "+5 минут к таймеру забега", "+5 Minutes to Run Timer" } },
+            { "timer_label",    new[] { "Таймер забега:", "Run Timer:" } },
+            { "min",            new[] { "мин", "min" } },
+            { "sec",            new[] { "сек", "sec" } },
+            { "add",            new[] { "Добавить", "Add" } },
 
             { "itemmode_give",  new[] { "Выдать", "Give" } },
             { "itemmode_take",  new[] { "Убрать", "Remove" } },
@@ -460,24 +489,36 @@ namespace FirstMod
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
-            if (GUILayout.Button(T("money"), btnStyle))
-                Send("fm_money 1000 " + AllFlag());
+            // деньги: поле + кнопка (пустое поле - ничего не отправляем)
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(T("money_label"), labelStyle, GUILayout.Width(220), GUILayout.Height(38));
+            moneyText = IntField("moneyAmount", moneyText, 260f, 9);
+            int moneyAmount;
+            if (GUILayout.Button(T("give"), btnStyle, GUILayout.Width(140)) && TryInt(moneyText, 0, int.MaxValue, out moneyAmount))
+                Send("fm_money " + moneyAmount + " " + AllFlag());
+            GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
-            if (GUILayout.Button(T("lunar"), btnStyle))
-                Send("fm_lunar 10");
+            // лунные монеты: то же самое
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(T("lunar_label"), labelStyle, GUILayout.Width(220), GUILayout.Height(38));
+            lunarText = IntField("lunarAmount", lunarText, 260f, 9);
+            int lunarAmount;
+            if (GUILayout.Button(T("give"), btnStyle, GUILayout.Width(140)) && TryInt(lunarText, 0, int.MaxValue, out lunarAmount))
+                Send("fm_lunar " + lunarAmount);
+            GUILayout.EndHorizontal();
         }
 
         private void DrawMovementTab()
         {
-            SliderRow(T("move_speed"), ref moveSpeedOn, ref moveSpeed, 1f, 10f);
+            SliderRow("moveSpeed", T("move_speed"), ref moveSpeedOn, ref moveSpeed, 1f, 10f, MoveSpeedMax);
             GUILayout.Space(8);
 
             bool j = ToggleButton(infJumps, T("inf_jumps"));
             if (j != infJumps) { infJumps = j; statsChanged = true; }
             GUILayout.Space(8);
 
-            SliderRow(T("fly"), ref flyOn, ref flySpeed, 1f, 10f);
+            SliderRow("flySpeed", T("fly"), ref flyOn, ref flySpeed, 1f, 10f, FlySpeedMax);
             GUILayout.Space(8);
 
             noclipOn = ToggleButton(noclipOn, T("noclip"));
@@ -496,7 +537,7 @@ namespace FirstMod
             }
             GUILayout.Space(8);
 
-            SliderRow(T("attack_speed"), ref attackSpeedOn, ref attackSpeed, 1f, 50f);
+            SliderRow("attackSpeed", T("attack_speed"), ref attackSpeedOn, ref attackSpeed, 1f, 50f, AttackSpeedMax);
             GUILayout.Space(8);
 
             bool c = ToggleButton(critOn, T("crit"));
@@ -512,7 +553,7 @@ namespace FirstMod
 
         private void DrawWorldTab()
         {
-            SliderRow(T("game_speed"), ref gameSpeedOn, ref gameSpeed, 0.1f, 5f);
+            SliderRow("gameSpeed", T("game_speed"), ref gameSpeedOn, ref gameSpeed, 0.1f, 5f, GameSpeedMax);
             GUILayout.Space(8);
 
             if (GUILayout.Button(T("tele"), btnStyle))
@@ -527,8 +568,22 @@ namespace FirstMod
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
-            if (GUILayout.Button(T("addtime"), btnStyle))
-                Send("fm_addtime 300");
+            // таймер забега: минуты + секунды (только неотрицательные значения)
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(T("timer_label"), labelStyle, GUILayout.Width(200), GUILayout.Height(38));
+            timerMinText = IntField("timerMin", timerMinText, 90f, 5);
+            GUILayout.Label(T("min"), labelStyle, GUILayout.Width(50), GUILayout.Height(38));
+            timerSecText = IntField("timerSec", timerSecText, 90f, 5);
+            GUILayout.Label(T("sec"), labelStyle, GUILayout.Width(50), GUILayout.Height(38));
+            if (GUILayout.Button(T("add"), btnStyle, GUILayout.Width(140)))
+            {
+                int m, sec;
+                if (!TryInt(timerMinText, 0, 99999, out m)) m = 0;
+                if (!TryInt(timerSecText, 0, 99999, out sec)) sec = 0;
+                long total = m * 60L + sec;
+                if (total > 0) Send("fm_addtime " + total);
+            }
+            GUILayout.EndHorizontal();
         }
 
         private void DrawItemsTab()
@@ -581,8 +636,13 @@ namespace FirstMod
             foreach (int a in AmountChoices)
             {
                 if (GUILayout.Button("x" + a, itemAmount == a ? btnOnStyle : btnStyle))
+                {
                     itemAmount = a;
+                    itemAmountText = a.ToString();
+                    GUIUtility.keyboardControl = 0;
+                }
             }
+            AmountField("itemAmountField", ref itemAmountText, ref itemAmount, ItemAmountMax, 6);
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
@@ -641,8 +701,13 @@ namespace FirstMod
             foreach (int a in SpawnCountChoices)
             {
                 if (GUILayout.Button("x" + a, spawnCount == a ? btnOnStyle : btnStyle))
+                {
                     spawnCount = a;
+                    spawnCountText = a.ToString();
+                    GUIUtility.keyboardControl = 0;
+                }
             }
+            AmountField("spawnCountField", ref spawnCountText, ref spawnCount, SpawnCountMax, 3);
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
@@ -1314,6 +1379,57 @@ namespace FirstMod
             return t;
         }
 
+        // скруглённый прямоугольник с вертикальным градиентом; используется как 9-slice (border = radius)
+        private static Texture2D MakeRoundedTex(Color top, Color bottom, int size = 12, int radius = 4)
+        {
+            var t = new Texture2D(size, size, TextureFormat.RGBA32, false)
+            {
+                hideFlags = HideFlags.HideAndDontSave,
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Bilinear
+            };
+            for (int y = 0; y < size; y++)
+            {
+                Color row = Color.Lerp(bottom, top, y / (float)(size - 1));
+                for (int x = 0; x < size; x++)
+                {
+                    float dx = Mathf.Max(radius - (x + 0.5f), (x + 0.5f) - (size - radius), 0f);
+                    float dy = Mathf.Max(radius - (y + 0.5f), (y + 0.5f) - (size - radius), 0f);
+                    float d = Mathf.Sqrt(dx * dx + dy * dy);
+                    Color px = row;
+                    px.a *= Mathf.Clamp01(radius - d + 0.5f);
+                    t.SetPixel(x, y, px);
+                }
+            }
+            t.Apply();
+            generatedTextures.Add(t);
+            return t;
+        }
+
+        // круг с мягким краем для ползунка
+        private static Texture2D MakeCircleTex(Color c, int size = 32)
+        {
+            var t = new Texture2D(size, size, TextureFormat.RGBA32, false)
+            {
+                hideFlags = HideFlags.HideAndDontSave,
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Bilinear
+            };
+            float r = size / 2f;
+            var center = new Vector2(r, r);
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float d = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), center);
+                    t.SetPixel(x, y, new Color(c.r, c.g, c.b, Mathf.Clamp01(r - d)));
+                }
+            }
+            t.Apply();
+            generatedTextures.Add(t);
+            return t;
+        }
+
         private void InitStyles()
         {
             // тёмно-фиолетовый фон окна с лёгким градиентом сверху вниз
@@ -1363,6 +1479,44 @@ namespace FirstMod
             textStyle.focused.background = btnHov;
             textStyle.normal.textColor = textStyle.hover.textColor = textStyle.focused.textColor = Color.white;
 
+            // ----- слайдер: тёмный трек, акцентная заливка до значения, круглый ползунок -----
+            var trackTex = MakeRoundedTex(new Color(0.07f, 0.06f, 0.11f), new Color(0.14f, 0.13f, 0.19f));
+            var fillTex = MakeRoundedTex(new Color(0.55f, 0.40f, 0.95f), new Color(0.25f, 0.50f, 0.95f));
+            var thumbTex = MakeCircleTex(new Color(0.42f, 0.45f, 0.96f));
+            var thumbHovTex = MakeCircleTex(new Color(0.66f, 0.58f, 1f));
+
+            sliderTrackStyle = new GUIStyle { border = new RectOffset(4, 4, 4, 4) };
+            sliderTrackStyle.normal.background = trackTex;
+
+            sliderFillStyle = new GUIStyle { border = new RectOffset(4, 4, 4, 4) };
+            sliderFillStyle.normal.background = fillTex;
+
+            // сам слайдер ничего не рисует (трек и заливку рисуем вручную), только даёт ввод
+            sliderStyle = new GUIStyle(GUI.skin.horizontalSlider)
+            {
+                border = new RectOffset(),
+                padding = new RectOffset(),
+                margin = new RectOffset(),
+                overflow = new RectOffset(),
+                fixedHeight = 0
+            };
+            sliderStyle.normal.background = sliderStyle.hover.background =
+                sliderStyle.active.background = sliderStyle.focused.background = null;
+
+            sliderThumbStyle = new GUIStyle(GUI.skin.horizontalSliderThumb)
+            {
+                border = new RectOffset(),
+                padding = new RectOffset(),
+                margin = new RectOffset(),
+                overflow = new RectOffset(),
+                fixedWidth = SliderThumbSize,
+                fixedHeight = SliderThumbSize
+            };
+            sliderThumbStyle.normal.background = sliderThumbStyle.onNormal.background = thumbTex;
+            sliderThumbStyle.hover.background = sliderThumbStyle.onHover.background = thumbHovTex;
+            sliderThumbStyle.active.background = sliderThumbStyle.onActive.background = thumbHovTex;
+            sliderThumbStyle.focused.background = sliderThumbStyle.onFocused.background = thumbTex;
+
             RebuildLabels();
             stylesReady = true;
         }
@@ -1374,19 +1528,159 @@ namespace FirstMod
             return value;
         }
 
-        private void SliderRow(string label, ref bool on, ref float value, float min, float max)
+        private const float SliderThumbSize = 22f;
+
+        // Слайдер с закрашенной частью: трек и заливку рисуем сами, ввод берём у GUI.HorizontalSlider.
+        private float FancySlider(float value, float min, float max)
+        {
+            Rect r = GUILayoutUtility.GetRect(0f, 38f, GUILayout.ExpandWidth(true), GUILayout.Height(38f));
+            var track = new Rect(r.x, r.y + (r.height - 10f) / 2f, r.width, 10f);
+            var input = new Rect(r.x, r.y + (r.height - SliderThumbSize) / 2f, r.width, SliderThumbSize);
+
+            // значение может быть выше диапазона слайдера (введено вручную) - слайдер тогда стоит на краю
+            float shown = Mathf.Clamp(value, min, max);
+
+            if (Event.current.type == EventType.Repaint)
+            {
+                float t = Mathf.InverseLerp(min, max, shown);
+                float fillW = Mathf.Max(10f, SliderThumbSize / 2f + t * (r.width - SliderThumbSize));
+                sliderTrackStyle.Draw(track, false, false, false, false);
+                sliderFillStyle.Draw(new Rect(track.x, track.y, fillW, track.height), false, false, false, false);
+            }
+
+            float moved = GUI.HorizontalSlider(input, shown, min, max, sliderStyle, sliderThumbStyle);
+            return Mathf.Approximately(moved, shown) ? value : moved;
+        }
+
+        private static string FormatNum(float v)
+        {
+            return v.ToString("0.##", CultureInfo.InvariantCulture);
+        }
+
+        private static bool TryParseNum(string s, out float result)
+        {
+            result = 0f;
+            if (string.IsNullOrEmpty(s)) return false;
+            s = s.Trim().Replace(',', '.');
+            if (!float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out result)) return false;
+            return !float.IsNaN(result) && !float.IsInfinity(result);
+        }
+
+        // оставляем только цифры (и один разделитель, если разрешены дробные)
+        private static string FilterNum(string s, bool allowDecimal)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var sb = new System.Text.StringBuilder(s.Length);
+            bool sep = false;
+            foreach (char c in s)
+            {
+                if (c >= '0' && c <= '9') sb.Append(c);
+                else if (allowDecimal && !sep && (c == '.' || c == ',')) { sb.Append(c); sep = true; }
+            }
+            return sb.ToString();
+        }
+
+        private static bool TryInt(string s, int min, int max, out int result)
+        {
+            result = 0;
+            long v;
+            if (string.IsNullOrEmpty(s) || !long.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out v)) return false;
+            result = (int)Math.Max(min, Math.Min(max, v));
+            return true;
+        }
+
+        // Применить введённый текст: невалидный ввод молча отбрасывается (остаётся прошлое значение).
+        private bool CommitNum(string id, string text, ref float value, float min, float max)
+        {
+            numBuf.Remove(id);
+            float parsed;
+            if (!TryParseNum(text, out parsed)) return false;
+            parsed = Mathf.Clamp(parsed, min, max);
+            if (Mathf.Approximately(parsed, value)) return false;
+            value = parsed;
+            return true;
+        }
+
+        // Дробное числовое поле: применяется по Enter или при потере фокуса, а не на каждый символ.
+        private bool NumField(string id, ref float value, float min, float max, float width)
+        {
+            string text;
+            bool has = numBuf.TryGetValue(id, out text);
+            if (!has) text = FormatNum(value);
+
+            bool committed = false;
+            bool focused = GUI.GetNameOfFocusedControl() == id;
+            Event e = Event.current;
+
+            if (focused)
+            {
+                numEditing = id;
+                if (e.type == EventType.KeyDown && (e.keyCode == KeyCode.Return || e.keyCode == KeyCode.KeypadEnter))
+                {
+                    e.Use();
+                    if (has) committed = CommitNum(id, text, ref value, min, max);
+                    numEditing = null;
+                    GUIUtility.keyboardControl = 0;
+                    has = false;
+                    text = FormatNum(value);
+                }
+            }
+            else if (numEditing == id)
+            {
+                // фокус ушёл с поля
+                numEditing = null;
+                if (has) committed = CommitNum(id, text, ref value, min, max);
+                has = false;
+                text = FormatNum(value);
+            }
+
+            GUI.SetNextControlName(id);
+            string typed = GUILayout.TextField(text, 10, textStyle, GUILayout.Width(width), GUILayout.Height(38));
+            if (typed != text) numBuf[id] = FilterNum(typed, true);
+
+            return committed;
+        }
+
+        // Целое поле для «выдать N»: значение читается кнопкой, поэтому просто храним отфильтрованную строку.
+        private string IntField(string id, string text, float width, int maxLen)
+        {
+            GUI.SetNextControlName(id);
+            string typed = GUILayout.TextField(text ?? "", maxLen, textStyle, GUILayout.Width(width), GUILayout.Height(38));
+            return FilterNum(typed, false);
+        }
+
+        // Поле количества рядом с пресетами: пустой/невалидный ввод не меняет значение,
+        // а после ухода фокуса текст возвращается к последнему валидному числу.
+        private void AmountField(string id, ref string text, ref int value, int max, int maxLen)
+        {
+            GUI.SetNextControlName(id);
+            string typed = FilterNum(GUILayout.TextField(text ?? "", maxLen, textStyle, GUILayout.Width(110), GUILayout.Height(34)), false);
+
+            int parsed;
+            if (TryInt(typed, 1, max, out parsed)) value = parsed;
+            text = typed;
+
+            if (GUI.GetNameOfFocusedControl() != id && text != value.ToString())
+                text = value.ToString();
+        }
+
+        private void SliderRow(string id, string label, ref bool on, ref float value, float min, float max, float cap)
         {
             GUILayout.BeginHorizontal();
 
             bool newOn = ToggleButton(on, label, GUILayout.Width(320));
 
-            GUILayout.BeginVertical();
-            GUILayout.FlexibleSpace();
-            float newVal = GUILayout.HorizontalSlider(value, min, max);
-            GUILayout.FlexibleSpace();
-            GUILayout.EndVertical();
+            float newVal = FancySlider(value, min, max);
+            bool sliderMoved = !Mathf.Approximately(newVal, value);
+            if (sliderMoved)
+            {
+                // слайдер главнее недопечатанного текста
+                numBuf.Remove(id);
+                if (numEditing == id) { numEditing = null; GUIUtility.keyboardControl = 0; }
+            }
 
-            GUILayout.Label("x" + newVal.ToString("0.0"), labelStyle, GUILayout.Width(70), GUILayout.Height(38));
+            GUILayout.Label("x", labelStyle, GUILayout.Width(14), GUILayout.Height(38));
+            NumField(id, ref newVal, min, cap, 84f);
 
             GUILayout.EndHorizontal();
 
