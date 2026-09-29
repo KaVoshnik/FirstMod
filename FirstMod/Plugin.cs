@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
 using BepInEx;
+using BepInEx.Configuration;
 using RoR2;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -20,7 +21,9 @@ namespace FirstMod
         // эти флаги только отражают состояние кнопок; реальное действие выполняет сервер
         private bool godMode;
         private bool oneShot;
-        private bool forAllPlayers; // применять действия ко всем игрокам
+        // кому применяются действия: 0 = мне, 1 = всем игрокам, 2 = конкретному игроку (targetNetId)
+        private int targetKind;
+        private uint targetNetId;
 
         // локальные функции (работают у любого игрока)
         private bool critOn;
@@ -127,6 +130,17 @@ namespace FirstMod
         private bool commandsRegistered;
         private static Plugin instance; // нужен серверным командам, чтобы запускать корутины и писать в лог
 
+        // ---------- Настройки (BepInEx config) ----------
+        // Файл: BepInEx/config/com.Kavoshnik.firstmod.cfg. Пишем его при закрытии меню,
+        // а не на каждое движение слайдера (SaveOnConfigSet отключён).
+        private ConfigEntry<KeyCode> cfgMenuKey;
+        private ConfigEntry<string> cfgLang;
+        private ConfigEntry<bool> cfgTiles;
+        private ConfigEntry<float> cfgMoveSpeed, cfgFlySpeed, cfgAttackSpeed, cfgGameSpeed;
+
+        // true, пока курсор стоит в текстовом поле - тогда клавиша меню не должна закрывать окно
+        private bool typingInField;
+
         // ---------- Локализация ----------
         private enum Lang { RU, EN }
         private static Lang currentLang = Lang.RU;
@@ -146,7 +160,10 @@ namespace FirstMod
                                          "You are a client: server-side features only work if the mod is installed on the host" } },
 
             { "god",            new[] { "Бессмертие", "God Mode" } },
-            { "for_all",        new[] { "Действия для всех игроков", "Apply to all players" } },
+            { "target",         new[] { "Цель:", "Target:" } },
+            { "target_me",      new[] { "Я", "Me" } },
+            { "target_all",     new[] { "Все", "All" } },
+            { "tp_all",         new[] { "Всех ко мне", "Bring everyone to me" } },
             { "heal",           new[] { "Лечить", "Heal" } },
             { "revive",         new[] { "Воскресить", "Revive" } },
             { "money_label",    new[] { "Деньги:", "Money:" } },
@@ -178,7 +195,6 @@ namespace FirstMod
             { "itemmode_give",  new[] { "Выдать", "Give" } },
             { "itemmode_take",  new[] { "Убрать", "Remove" } },
             { "itemmode_equip", new[] { "Экипировка", "Equipment" } },
-            { "for_all_items",  new[] { "Для всех игроков", "For all players" } },
             { "search",         new[] { "Поиск:", "Search:" } },
             { "remove_equip",   new[] { "Убрать экипировку", "Remove Equipment" } },
             { "amount",         new[] { "Количество:", "Amount:" } },
@@ -237,6 +253,8 @@ namespace FirstMod
             instance = this;
             Logger.LogInfo("FirstMod loaded!");
 
+            LoadSettings();
+
             On.RoR2.HealthComponent.TakeDamage += OnTakeDamage;
             On.RoR2.CharacterBody.RecalculateStats += OnRecalculateStats;
 
@@ -266,6 +284,43 @@ namespace FirstMod
             foreach (var tex in generatedTextures)
                 if (tex) Destroy(tex);
             generatedTextures.Clear();
+        }
+
+        private void LoadSettings()
+        {
+            Config.SaveOnConfigSet = false;
+
+            cfgMenuKey = Config.Bind("General", "MenuKey", KeyCode.N, "Клавиша открытия меню / Menu toggle key");
+            cfgLang = Config.Bind("General", "Language", "RU", "Язык интерфейса: RU или EN / UI language: RU or EN");
+            cfgTiles = Config.Bind("Items", "TileView", true, "Показывать предметы плитками / Show items as icon tiles");
+
+            cfgMoveSpeed = Config.Bind("Values", "MoveSpeed", 2f, "Множитель скорости игрока / Move speed multiplier");
+            cfgFlySpeed = Config.Bind("Values", "FlySpeed", 1.5f, "Множитель скорости полёта / Flight speed multiplier");
+            cfgAttackSpeed = Config.Bind("Values", "AttackSpeed", 3f, "Множитель скорости атаки / Attack speed multiplier");
+            cfgGameSpeed = Config.Bind("Values", "GameSpeed", 1.5f, "Скорость игры / Game speed");
+
+            currentLang = string.Equals(cfgLang.Value, "EN", StringComparison.OrdinalIgnoreCase) ? Lang.EN : Lang.RU;
+            itemTiles = cfgTiles.Value;
+
+            // значения из файла могли быть отредактированы руками - держим их в допустимых границах
+            moveSpeed = Mathf.Clamp(cfgMoveSpeed.Value, 1f, MoveSpeedMax);
+            flySpeed = Mathf.Clamp(cfgFlySpeed.Value, 1f, FlySpeedMax);
+            attackSpeed = Mathf.Clamp(cfgAttackSpeed.Value, 1f, AttackSpeedMax);
+            gameSpeed = Mathf.Clamp(cfgGameSpeed.Value, 0.1f, GameSpeedMax);
+        }
+
+        // Переключатели ON/OFF намеренно не сохраняем: читы не должны включаться сами при запуске игры.
+        private void SaveSettings()
+        {
+            if (cfgLang == null) return;
+
+            cfgLang.Value = currentLang == Lang.EN ? "EN" : "RU";
+            cfgTiles.Value = itemTiles;
+            cfgMoveSpeed.Value = moveSpeed;
+            cfgFlySpeed.Value = flySpeed;
+            cfgAttackSpeed.Value = attackSpeed;
+            cfgGameSpeed.Value = gameSpeed;
+            Config.Save();
         }
 
         // Новый забег на сервере = старые netId в GodMasters/OneShotMasters могут
@@ -317,7 +372,8 @@ namespace FirstMod
         // ---------- Каждый кадр ----------
         private void Update()
         {
-            if (Input.GetKeyDown(KeyCode.BackQuote))
+            // пока печатаем в поле (поиск, числа), клавиша меню - это просто буква; закрыть можно по Esc
+            if (Input.GetKeyDown(cfgMenuKey.Value) && !(showMenu && typingInField))
                 SetMenu(!showMenu);
             else if (showMenu && Input.GetKeyDown(KeyCode.Escape))
                 SetMenu(false);
@@ -406,7 +462,12 @@ namespace FirstMod
         {
             showMenu = open;
 
-            if (!open) GUIUtility.keyboardControl = 0; // убрать фокус с поля поиска
+            if (!open)
+            {
+                GUIUtility.keyboardControl = 0; // убрать фокус с поля поиска
+                typingInField = false;
+                SaveSettings();
+            }
 
             // открытое меню = игровой ввод выключен
             var player = LocalUserManager.GetFirstLocalUser()?.inputPlayer;
@@ -424,9 +485,62 @@ namespace FirstMod
             RoR2.Console.instance.SubmitCmd(user, cmd, false);
         }
 
-        private string AllFlag()
+        // Формат цели в серверных командах: "0" = отправитель, "1" = все игроки, "u<netId>" = конкретный игрок
+        private string TargetArg()
         {
-            return forAllPlayers ? "1" : "0";
+            if (targetKind == 1) return "1";
+            if (targetKind == 2) return "u" + targetNetId;
+            return "0";
+        }
+
+        private static string PlayerName(NetworkUser user)
+        {
+            string name = user.userName;
+            return string.IsNullOrEmpty(name) ? "Player " + user.netId.Value : name;
+        }
+
+        private static bool UserExists(uint netId)
+        {
+            foreach (var u in NetworkUser.readOnlyInstancesList)
+                if (u && u.netId.Value == netId) return true;
+            return false;
+        }
+
+        // Кнопки выбора цели: "Я", "Все" и по кнопке на каждого другого игрока.
+        // Рисуются внутри горизонтальной группы вызывающего. Чужих игроков может трогать только хост.
+        private void DrawTargetButtons()
+        {
+            bool host = NetworkServer.active;
+
+            // цель пропала (игрок вышел) или мы уже не хост - возвращаемся к "мне"
+            if (!host || (targetKind == 2 && !UserExists(targetNetId))) targetKind = 0;
+
+            var me = LocalUserManager.GetFirstLocalUser()?.currentNetworkUser;
+
+            GUILayout.Label(T("target"), labelStyle, GUILayout.Width(90), GUILayout.Height(38));
+
+            if (GUILayout.Button(T("target_me"), targetKind == 0 ? btnOnStyle : btnStyle, GUILayout.Width(90)))
+                targetKind = 0;
+
+            bool prev = GUI.enabled;
+            GUI.enabled = prev && host;
+
+            if (GUILayout.Button(T("target_all"), targetKind == 1 ? btnOnStyle : btnStyle, GUILayout.Width(90)))
+                targetKind = 1;
+
+            foreach (var user in NetworkUser.readOnlyInstancesList)
+            {
+                if (!user || user == me) continue;
+
+                bool selected = targetKind == 2 && targetNetId == user.netId.Value;
+                if (GUILayout.Button(PlayerName(user), selected ? btnOnStyle : btnStyle, GUILayout.MinWidth(90)))
+                {
+                    targetKind = 2;
+                    targetNetId = user.netId.Value;
+                }
+            }
+
+            GUI.enabled = prev;
         }
 
         // ---------- GUI ----------
@@ -482,6 +596,9 @@ namespace FirstMod
                 if (body) body.MarkAllStatsDirty(); // пересчитать статы с новыми значениями
             }
 
+            if (Event.current.type == EventType.Repaint)
+                typingInField = !string.IsNullOrEmpty(GUI.GetNameOfFocusedControl());
+
             // окно можно таскать за верхнюю полосу (область заголовка)
             GUI.DragWindow(new Rect(0f, 0f, windowRect.width, 40f));
         }
@@ -514,8 +631,7 @@ namespace FirstMod
                 if (!user || user == me) continue;
                 shown++;
 
-                string name = user.userName;
-                if (string.IsNullOrEmpty(name)) name = "Player " + shown;
+                string name = PlayerName(user);
 
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(name, labelStyle, GUILayout.Height(38));
@@ -538,6 +654,12 @@ namespace FirstMod
             else
             {
                 GUILayout.Space(4);
+                bool wasEnabled = GUI.enabled;
+                GUI.enabled = wasEnabled && NetworkServer.active;
+                if (GUILayout.Button(T("tp_all"), btnStyle))
+                    Send("fm_tp 2 0");
+                GUI.enabled = wasEnabled;
+                GUILayout.Space(4);
                 GUILayout.Label(T("tp_note"), labelStyle);
             }
         }
@@ -548,18 +670,20 @@ namespace FirstMod
             if (g != godMode)
             {
                 godMode = g;
-                Send("fm_god " + (g ? "1" : "0") + " " + AllFlag());
+                Send("fm_god " + (g ? "1" : "0") + " " + TargetArg());
             }
             GUILayout.Space(8);
 
-            forAllPlayers = ToggleButton(forAllPlayers, T("for_all"));
+            GUILayout.BeginHorizontal();
+            DrawTargetButtons();
+            GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(T("heal"), btnStyle))
-                Send("fm_heal " + AllFlag());
+                Send("fm_heal " + TargetArg());
             if (GUILayout.Button(T("revive"), btnStyle))
-                Send("fm_revive " + AllFlag());
+                Send("fm_revive " + TargetArg());
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
@@ -569,7 +693,7 @@ namespace FirstMod
             moneyText = IntField("moneyAmount", moneyText, 260f, 9);
             int moneyAmount;
             if (GUILayout.Button(T("give"), btnStyle, GUILayout.Width(140)) && TryInt(moneyText, 0, int.MaxValue, out moneyAmount))
-                Send("fm_money " + moneyAmount + " " + AllFlag());
+                Send("fm_money " + moneyAmount + " " + TargetArg());
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
@@ -579,7 +703,7 @@ namespace FirstMod
             lunarText = IntField("lunarAmount", lunarText, 260f, 9);
             int lunarAmount;
             if (GUILayout.Button(T("give"), btnStyle, GUILayout.Width(140)) && TryInt(lunarText, 0, int.MaxValue, out lunarAmount))
-                Send("fm_lunar " + lunarAmount);
+                Send("fm_lunar " + lunarAmount + " " + TargetArg());
             GUILayout.EndHorizontal();
         }
 
@@ -607,7 +731,7 @@ namespace FirstMod
             if (o != oneShot)
             {
                 oneShot = o;
-                Send("fm_oneshot " + (o ? "1" : "0") + " " + AllFlag());
+                Send("fm_oneshot " + (o ? "1" : "0") + " " + TargetArg());
             }
             GUILayout.Space(8);
 
@@ -689,7 +813,7 @@ namespace FirstMod
             GUILayout.Space(8);
 
             GUILayout.BeginHorizontal();
-            forAllPlayers = ToggleButton(forAllPlayers, T("for_all_items"), GUILayout.Width(380));
+            DrawTargetButtons();
             GUILayout.Space(12);
             GUILayout.Label(string.IsNullOrEmpty(hoverShown) ? " " : hoverShown, labelStyle, GUILayout.Height(38));
             GUILayout.EndHorizontal();
@@ -698,6 +822,7 @@ namespace FirstMod
             // поиск + переключатель вида
             GUILayout.BeginHorizontal();
             GUILayout.Label(T("search"), labelStyle, GUILayout.Width(80), GUILayout.Height(34));
+            GUI.SetNextControlName("itemSearch");
             itemSearch = GUILayout.TextField(itemSearch ?? "", textStyle, GUILayout.Height(34));
             GUILayout.Space(8);
             itemTiles = ToggleButton(itemTiles, T("view_tiles"), GUILayout.Width(200));
@@ -711,7 +836,7 @@ namespace FirstMod
             if (itemMode == 2)
             {
                 if (GUILayout.Button(T("remove_equip"), btnStyle))
-                    Send("fm_equip none " + AllFlag());
+                    Send("fm_equip none " + TargetArg());
                 GUILayout.Space(8);
 
                 tileViewHeight = ListHeight(430f);
@@ -724,11 +849,11 @@ namespace FirstMod
                     {
                         if (col == 0) GUILayout.BeginHorizontal();
                         if (DrawTile(entry.def.pickupIconSprite, entry.color, entry.name, -1))
-                            Send("fm_equip " + entry.def.name + " " + AllFlag());
+                            Send("fm_equip " + entry.def.name + " " + TargetArg());
                         if (++col >= cols) { GUILayout.EndHorizontal(); GUILayout.Space(TileGap); col = 0; }
                     }
                     else if (GUILayout.Button(entry.name, btnStyle))
-                        Send("fm_equip " + entry.def.name + " " + AllFlag());
+                        Send("fm_equip " + entry.def.name + " " + TargetArg());
                 }
                 if (itemTiles && col > 0) GUILayout.EndHorizontal();
                 GUILayout.EndScrollView();
@@ -756,7 +881,7 @@ namespace FirstMod
             if (removeMode)
             {
                 if (GUILayout.Button(T("clear_inv"), btnStyle))
-                    Send("fm_clearinv " + AllFlag());
+                    Send("fm_clearinv " + TargetArg());
                 GUILayout.Space(8);
             }
 
@@ -790,7 +915,7 @@ namespace FirstMod
                 if (clicked)
                 {
                     string verb = removeMode ? "fm_takeitem " : "fm_giveitem ";
-                    Send(verb + entry.def.name + " " + itemAmount + " " + AllFlag());
+                    Send(verb + entry.def.name + " " + itemAmount + " " + TargetArg());
                 }
             }
             if (itemTiles && col > 0) GUILayout.EndHorizontal();
@@ -902,6 +1027,7 @@ namespace FirstMod
             // поиск
             GUILayout.BeginHorizontal();
             GUILayout.Label(T("search"), labelStyle, GUILayout.Width(80), GUILayout.Height(34));
+            GUI.SetNextControlName("spawnSearch");
             spawnSearch = GUILayout.TextField(spawnSearch ?? "", textStyle, GUILayout.Height(34));
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
@@ -1137,16 +1263,34 @@ namespace FirstMod
             return hostUser != null && a.sender == hostUser;
         }
 
-        // цели: все игроки или только отправитель команды
-        private static List<CharacterMaster> ServerTargets(ConCommandArgs a, bool all)
+        // Цель команды: "0" / пусто = отправитель, "1" = все игроки, "u<netId>" = конкретный игрок.
+        // Себя может выбрать любой, всех и других игроков - только хост.
+        private static bool TargetAllowed(ConCommandArgs a, string target)
+        {
+            if (string.IsNullOrEmpty(target) || target == "0") return true;
+            return IsHostSender(a);
+        }
+
+        private static List<CharacterMaster> ServerTargets(ConCommandArgs a, string target)
         {
             var list = new List<CharacterMaster>();
 
-            if (all)
+            if (target == "1")
             {
                 foreach (var pc in PlayerCharacterMasterController.instances)
                 {
                     if (pc && pc.master) list.Add(pc.master);
+                }
+            }
+            else if (!string.IsNullOrEmpty(target) && target[0] == 'u')
+            {
+                uint id;
+                if (uint.TryParse(target.Substring(1), NumberStyles.None, CultureInfo.InvariantCulture, out id))
+                {
+                    foreach (var u in NetworkUser.readOnlyInstancesList)
+                    {
+                        if (u && u.netId.Value == id && u.master) { list.Add(u.master); break; }
+                    }
                 }
             }
             else
@@ -1187,9 +1331,9 @@ namespace FirstMod
             return null;
         }
 
-        private static void SetFlag(HashSet<NetworkInstanceId> set, ConCommandArgs a, bool on, bool all)
+        private static void SetFlag(HashSet<NetworkInstanceId> set, ConCommandArgs a, bool on, string target)
         {
-            foreach (var m in ServerTargets(a, all))
+            foreach (var m in ServerTargets(a, target))
             {
                 if (on) set.Add(m.netId);
                 else set.Remove(m.netId);
@@ -1200,28 +1344,28 @@ namespace FirstMod
         private static void CmdGod(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
-            bool all = ArgBool(a, 1);
-            if (all && !IsHostSender(a)) return; // только хост может выдавать бессмертие всем
-            SetFlag(GodMasters, a, ArgBool(a, 0), all);
+            string target = ArgStr(a, 1);
+            if (!TargetAllowed(a, target)) return; // только хост может выдавать бессмертие другим
+            SetFlag(GodMasters, a, ArgBool(a, 0), target);
         }
 
         // fm_oneshot <0|1> <all>
         private static void CmdOneShot(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
-            bool all = ArgBool(a, 1);
-            if (all && !IsHostSender(a)) return;
-            SetFlag(OneShotMasters, a, ArgBool(a, 0), all);
+            string target = ArgStr(a, 1);
+            if (!TargetAllowed(a, target)) return;
+            SetFlag(OneShotMasters, a, ArgBool(a, 0), target);
         }
 
         // fm_heal <all>
         private static void CmdHeal(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
-            bool all = ArgBool(a, 0);
-            if (all && !IsHostSender(a)) return;
+            string target = ArgStr(a, 0);
+            if (!TargetAllowed(a, target)) return;
 
-            foreach (var m in ServerTargets(a, all))
+            foreach (var m in ServerTargets(a, target))
             {
                 var body = m.GetBody();
                 if (body && body.healthComponent)
@@ -1236,10 +1380,10 @@ namespace FirstMod
         private static void CmdRevive(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
-            bool all = ArgBool(a, 0);
-            if (all && !IsHostSender(a)) return;
+            string target = ArgStr(a, 0);
+            if (!TargetAllowed(a, target)) return;
 
-            foreach (var m in ServerTargets(a, all))
+            foreach (var m in ServerTargets(a, target))
             {
                 if (!m.GetBody())
                     m.Respawn(m.deathFootPosition, Quaternion.identity);
@@ -1250,21 +1394,28 @@ namespace FirstMod
         private static void CmdMoney(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
-            bool all = ArgBool(a, 1);
-            if (all && !IsHostSender(a)) return;
+            string target = ArgStr(a, 1);
+            if (!TargetAllowed(a, target)) return;
 
             int amount = Mathf.Max(0, ArgInt(a, 0, 0));
-            foreach (var m in ServerTargets(a, all))
+            foreach (var m in ServerTargets(a, target))
                 m.GiveMoney((uint)amount);
         }
 
-        // fm_lunar <amount>  (только отправителю)
+        // fm_lunar <amount> <target>
         private static void CmdLunar(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
 
+            string target = ArgStr(a, 1);
+            if (!TargetAllowed(a, target)) return;
+
             int amount = Mathf.Max(0, ArgInt(a, 0, 0));
-            if (a.sender) a.sender.AwardLunarCoins((uint)amount);
+            foreach (var m in ServerTargets(a, target))
+            {
+                var user = m.playerCharacterMasterController ? m.playerCharacterMasterController.networkUser : null;
+                if (user) user.AwardLunarCoins((uint)amount);
+            }
         }
 
         // fm_giveitem <name> <count> <all>
@@ -1272,14 +1423,14 @@ namespace FirstMod
         {
             if (!NetworkServer.active) return;
 
-            bool all = ArgBool(a, 2);
-            if (all && !IsHostSender(a)) return;
+            string target = ArgStr(a, 2);
+            if (!TargetAllowed(a, target)) return;
 
             var def = FindItem(ArgStr(a, 0));
             if (!def) return;
 
             int count = Mathf.Clamp(ArgInt(a, 1, 1), 1, 100000);
-            foreach (var m in ServerTargets(a, all))
+            foreach (var m in ServerTargets(a, target))
             {
                 if (m.inventory) m.inventory.GiveItemPermanent(def, count);
             }
@@ -1289,14 +1440,14 @@ namespace FirstMod
         private static void CmdTakeItem(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
-            bool all = ArgBool(a, 2);
-            if (all && !IsHostSender(a)) return;
+            string target = ArgStr(a, 2);
+            if (!TargetAllowed(a, target)) return;
 
             var def = FindItem(ArgStr(a, 0));
             if (!def) return;
 
             int count = Mathf.Clamp(ArgInt(a, 1, 1), 1, 100000);
-            foreach (var m in ServerTargets(a, all))
+            foreach (var m in ServerTargets(a, target))
             {
                 var inv = m.inventory;
                 if (!inv) continue;
@@ -1310,10 +1461,10 @@ namespace FirstMod
         private static void CmdClearInv(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
-            bool all = ArgBool(a, 0);
-            if (all && !IsHostSender(a)) return;
+            string target = ArgStr(a, 0);
+            if (!TargetAllowed(a, target)) return;
 
-            foreach (var m in ServerTargets(a, all))
+            foreach (var m in ServerTargets(a, target))
             {
                 var inv = m.inventory;
                 if (!inv) continue;
@@ -1333,8 +1484,8 @@ namespace FirstMod
         private static void CmdEquip(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
-            bool all = ArgBool(a, 1);
-            if (all && !IsHostSender(a)) return;
+            string target = ArgStr(a, 1);
+            if (!TargetAllowed(a, target)) return;
 
             string name = ArgStr(a, 0);
             EquipmentIndex index = EquipmentIndex.None;
@@ -1346,7 +1497,7 @@ namespace FirstMod
                 index = def.equipmentIndex;
             }
 
-            foreach (var m in ServerTargets(a, all))
+            foreach (var m in ServerTargets(a, target))
             {
                 if (m.inventory) m.inventory.SetEquipmentIndex(index);
             }
@@ -1469,15 +1620,42 @@ namespace FirstMod
         // fm_tp <mode> <netId>
         // mode 0: телепортировать игрока с этим netId к отправителю (только хост)
         // mode 1: телепортировать отправителя к игроку с этим netId (любой игрок)
+        // mode 2: телепортировать всех остальных игроков к отправителю (только хост, netId не нужен)
         private static void CmdTp(ConCommandArgs a)
         {
             if (!NetworkServer.active || !a.sender) return;
 
             int mode = ArgInt(a, 0, -1);
-            if (mode != 0 && mode != 1) return;
-            if (mode == 0 && !IsHostSender(a))
+            if (mode < 0 || mode > 2) return;
+            if (mode != 1 && !IsHostSender(a))
             {
-                if (instance) instance.Logger.LogInfo("fm_tp: 'к себе' разрешено только хосту.");
+                if (instance) instance.Logger.LogInfo("fm_tp: перемещать других игроков может только хост.");
+                return;
+            }
+
+            var senderBody = a.sender.master ? a.sender.master.GetBody() : null;
+            if (!senderBody)
+            {
+                if (instance) instance.Logger.LogInfo("fm_tp: у отправителя нет тела (мёртв?).");
+                return;
+            }
+
+            if (mode == 2)
+            {
+                var others = new List<CharacterBody>();
+                foreach (var u in NetworkUser.readOnlyInstancesList)
+                {
+                    if (!u || u == a.sender) continue;
+                    var b = u.master ? u.master.GetBody() : null;
+                    if (b) others.Add(b);
+                }
+
+                // раскладываем по кругу вокруг отправителя, чтобы игроки не слиплись в одной точке
+                for (int i = 0; i < others.Count; i++)
+                {
+                    Vector3 offset = Quaternion.Euler(0f, 360f / others.Count * i, 0f) * (Vector3.forward * 2f);
+                    TeleportBodyTo(others[i], senderBody.footPosition + offset + Vector3.up * 0.5f);
+                }
                 return;
             }
 
@@ -1491,12 +1669,11 @@ namespace FirstMod
             }
             if (!target || target == a.sender) return;
 
-            var senderBody = a.sender.master ? a.sender.master.GetBody() : null;
             var targetBody = target.master ? target.master.GetBody() : null;
-            if (!senderBody || !targetBody)
+            if (!targetBody)
             {
-                if (instance) instance.Logger.LogInfo("fm_tp: у одного из игроков нет тела (мёртв?).");
-                return; // кто-то мёртв - телепортировать некого
+                if (instance) instance.Logger.LogInfo("fm_tp: у цели нет тела (мёртв?).");
+                return;
             }
 
             if (mode == 0) TeleportBodyTo(targetBody, senderBody.footPosition + Vector3.up * 0.5f);
