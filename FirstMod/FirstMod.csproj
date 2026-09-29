@@ -3,9 +3,6 @@
     <PropertyGroup>
         <TargetFramework>netstandard2.1</TargetFramework>
         <LangVersion>latest</LangVersion>
-        <!-- Переопредели через переменные окружения или .csproj.user, если пути отличаются -->
-        <GameManaged Condition="'$(GameManaged)' == ''">D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2_Data\Managed</GameManaged>
-        <ProfileBepInEx Condition="'$(ProfileBepInEx)' == ''">C:\Users\Administrator\AppData\Roaming\Thunderstore Mod Manager\DataFolder\RiskOfRain2\profiles\Default\BepInEx</ProfileBepInEx>
     </PropertyGroup>
 
     <ItemGroup>
@@ -57,6 +54,14 @@
             <HintPath>$(GameManaged)\UnityEngine.TextRenderingModule.dll</HintPath>
             <Private>False</Private>
         </Reference>
+        <Reference Include="UnityEngine.PhysicsModule">
+            <HintPath>$(GameManaged)\UnityEngine.PhysicsModule.dll</HintPath>
+            <Private>False</Private>
+        </Reference>
+    </ItemGroup>
+
+    <ItemGroup>
+      <None Include="FirstMod.csproj.user" />
     </ItemGroup>
 
     <Target Name="CopyToPlugins" AfterTargets="Build">
