@@ -11,16 +11,24 @@ using UnityEngine.Networking;
 
 namespace FirstMod
 {
-    [BepInPlugin("com.Kavoshnik.firstmod", "FirstMod", "0.6.0")]
+    [BepInPlugin("com.Kavoshnik.firstmod", "FirstMod", ModVersion)]
     public class Plugin : BaseUnityPlugin
     {
+        // Версия мода: единственное место, где её нужно менять (атрибут BepInEx и вкладка «Настройки»).
+        // Правило: мелкое обновление +0.0.1, крупное +0.1.0.
+        public const string ModVersion = "0.7.0";
+
         // ---------- Состояние (клиентская часть) ----------
         private bool showMenu;
         private int tab;
 
-        // эти флаги только отражают состояние кнопок; реальное действие выполняет сервер
-        private bool godMode;
-        private bool oneShot;
+        // Состояние кнопок «Бессмертие» / «Ваншот» / «Без урона от падения»: у хоста оно читается из серверных
+        // списков (реальное состояние выбранной цели), у клиента серверных списков нет - там показываем
+        // последнюю отправленную команду для этой цели. Реальное действие всегда выполняет сервер.
+        private readonly Dictionary<string, bool> godSent = new Dictionary<string, bool>();
+        private readonly Dictionary<string, bool> oneShotSent = new Dictionary<string, bool>();
+        private bool noFallSent;
+        private readonly List<CharacterMaster> uiMasters = new List<CharacterMaster>();
         // кому применяются действия: 0 = мне, 1 = всем игрокам, 2 = конкретному игроку (targetNetId)
         private int targetKind;
         private uint targetNetId;
@@ -34,6 +42,13 @@ namespace FirstMod
         private bool moveSpeedOn; private float moveSpeed = 2f;
         private bool gameSpeedOn; private float gameSpeed = 1.5f;
         private bool gameSpeedWasOn;
+
+        // Дополнительные статы (применяются в OnRecalculateStats к телу локального игрока)
+        private bool damageOn; private float damageMult = 2f;   // множитель
+        private bool armorOn; private float armorAdd = 50f;     // добавка
+        private bool jumpOn; private float jumpMult = 2f;       // множитель
+        private bool regenOn; private float regenAdd = 10f;     // добавка, хп/с
+        private bool maxHpOn; private float maxHpMult = 2f;     // множитель
 
         private bool flyOn; private float flySpeed = 1.5f;
         private bool noclipOn;
@@ -73,6 +88,8 @@ namespace FirstMod
         private const float TileSize = 64f;
         private const float TileGap = 6f;
         private const float ItemsColumnWidth = 1120f;
+        private static readonly Color NormalTileColor = new Color(0.78f, 0.78f, 0.80f);
+        private static readonly Color BossTileColor = new Color(1f, 0.90f, 0.25f);
         private static readonly int[] AmountChoices = { 1, 5, 25, 100 };
 
         // Спавн
@@ -81,6 +98,8 @@ namespace FirstMod
             public string masterName;
             public string name;
             public string lower;
+            public Texture icon;   // портрет тела существа (может быть null)
+            public bool boss;      // чемпион / босс
         }
 
         private List<SpawnEntry> spawnList;
@@ -88,7 +107,48 @@ namespace FirstMod
         private int spawnCount = 1;
         private bool spawnAlly;
         private Vector2 spawnScroll;
+        private bool spawnTiles = true;     // плитки с портретами или обычный список
         private static readonly int[] SpawnCountChoices = { 1, 5, 10, 25 };
+
+        // Точки телепорта (хранятся в памяти на время сессии)
+        private class TpPoint
+        {
+            public string name;
+            public Vector3 pos;
+            public string scene;
+        }
+
+        private readonly List<TpPoint> tpPoints = new List<TpPoint>();
+        private string pointName = "";
+        private int pointSeq;
+        private Vector2 playersScroll;
+        private bool hasBack;
+        private Vector3 backPos;
+        private string backScene;
+        // Изменения списков применяем в начале следующей раскладки IMGUI, иначе число элементов
+        // меняется между Layout и Repaint одного кадра.
+        private readonly List<Action> pendingUi = new List<Action>();
+
+        // Управление забегом (вкладка «Мир»)
+        private struct StageEntry
+        {
+            public SceneDef def;
+            public string sceneName;
+            public string name;
+            public string lower;
+        }
+
+        private struct ArtifactEntry
+        {
+            public ArtifactDef def;
+            public string name;
+        }
+
+        private List<StageEntry> stageList;
+        private List<ArtifactEntry> artifactList;
+        private string[] difficultyLabels;
+        private string stageSearch = "";
+        private Vector2 stageScroll, worldScroll;
 
         // Свои значения количества (текстовые поля рядом с пресетами)
         private string itemAmountText = "1";
@@ -106,6 +166,12 @@ namespace FirstMod
         private const float FlySpeedMax = 100f;
         private const float AttackSpeedMax = 1000f;
         private const float GameSpeedMax = 1000f;
+        private const float DamageMax = 1000f;
+        private const float ArmorMax = 10000f;
+        private const float JumpMax = 50f;
+        private const float RegenMax = 10000f;
+        private const float MaxHpMax = 1000f;
+        private const int MaxTpPoints = 20;
         private const int ItemAmountMax = 100000;  // сервер клэмпит так же
         private const int SpawnCountMax = 100;     // сервер клэмпит так же
 
@@ -123,6 +189,7 @@ namespace FirstMod
         // кто бессмертен / кто убивает с одного удара (хранится только на сервере)
         private static readonly HashSet<NetworkInstanceId> GodMasters = new HashSet<NetworkInstanceId>();
         private static readonly HashSet<NetworkInstanceId> OneShotMasters = new HashSet<NetworkInstanceId>();
+        private static readonly HashSet<NetworkInstanceId> NoFallMasters = new HashSet<NetworkInstanceId>();
 
         // текстуры GUI, которые нужно уничтожить вручную (HideAndDontSave не убирается сборщиком мусора)
         private static readonly List<Texture2D> generatedTextures = new List<Texture2D>();
@@ -135,8 +202,9 @@ namespace FirstMod
         // а не на каждое движение слайдера (SaveOnConfigSet отключён).
         private ConfigEntry<KeyCode> cfgMenuKey;
         private ConfigEntry<string> cfgLang;
-        private ConfigEntry<bool> cfgTiles;
+        private ConfigEntry<bool> cfgTiles, cfgSpawnTiles;
         private ConfigEntry<float> cfgMoveSpeed, cfgFlySpeed, cfgAttackSpeed, cfgGameSpeed;
+        private ConfigEntry<float> cfgDamage, cfgArmor, cfgJump, cfgRegen, cfgMaxHp;
 
         // true, пока курсор стоит в текстовом поле - тогда клавиша меню не должна закрывать окно
         private bool typingInField;
@@ -220,6 +288,39 @@ namespace FirstMod
                                          "\"Go to them\" works for any player, \"Bring to me\" only for the host." } },
 
             { "settings_lang",  new[] { "Язык интерфейса", "Interface Language" } },
+            { "version",        new[] { "Версия", "Version" } },
+
+            { "sec_players",    new[] { "Телепорт между игроками", "Player teleport" } },
+            { "points_title",   new[] { "Точки телепорта", "Teleport points" } },
+            { "point_name",     new[] { "Имя:", "Name:" } },
+            { "point_save",     new[] { "Сохранить позицию", "Save position" } },
+            { "point_tp",       new[] { "Телепорт", "Teleport" } },
+            { "point_del",      new[] { "Удалить", "Delete" } },
+            { "point_default",  new[] { "Точка", "Point" } },
+            { "point_none",     new[] { "На этом этапе нет сохранённых точек", "No saved points on this stage" } },
+            { "point_limit",    new[] { "Достигнут лимит точек (20)", "Point limit reached (20)" } },
+            { "point_back",     new[] { "Вернуться назад", "Go back" } },
+            { "point_note",     new[] { "Точки видны только на этапе, где они сохранены. «Всех» и других игроков перемещает только хост.",
+                                         "Points are only shown on the stage they were saved on. Only the host can move \"All\" and other players." } },
+
+            { "stat_damage",    new[] { "Множитель урона", "Damage Multiplier" } },
+            { "stat_armor",     new[] { "Броня", "Armor" } },
+            { "stat_jump",      new[] { "Высота прыжка", "Jump Height" } },
+            { "stat_regen",     new[] { "Регенерация (хп/с)", "Regeneration (HP/s)" } },
+            { "stat_maxhp",     new[] { "Макс. здоровье", "Max Health" } },
+            { "no_fall",        new[] { "Без урона от падения", "No Fall Damage" } },
+            { "stats_note",     new[] { "Здоровье, броня и регенерация считаются сервером: у клиента они могут не сработать.",
+                                         "Health, armor and regen are calculated by the server: they may not apply for clients." } },
+            { "state_note",     new[] { "Вы клиент: кнопки показывают последнюю отправленную команду, а не состояние на сервере.",
+                                         "You are a client: buttons show the last command sent, not the server state." } },
+
+            { "run_title",      new[] { "Управление забегом (только хост)", "Run control (host only)" } },
+            { "run_note",       new[] { "Смена сложности и артефактов посреди забега может вести себя нестабильно.",
+                                         "Changing difficulty or artifacts mid-run may be unstable." } },
+            { "difficulty",     new[] { "Сложность:", "Difficulty:" } },
+            { "artifacts",      new[] { "Артефакты:", "Artifacts:" } },
+            { "stage_goto",     new[] { "Перейти на этап:", "Go to stage:" } },
+            { "cat_stage",      new[] { "Каталог этапов ещё загружается...", "Stage catalog still loading..." } },
         };
 
         private static string T(string key)
@@ -286,6 +387,12 @@ namespace FirstMod
             generatedTextures.Clear();
         }
 
+        // страховка: настройки пишутся и при выходе из игры, а не только при закрытии меню
+        private void OnApplicationQuit()
+        {
+            SaveSettings();
+        }
+
         private void LoadSettings()
         {
             Config.SaveOnConfigSet = false;
@@ -298,6 +405,12 @@ namespace FirstMod
             cfgFlySpeed = Config.Bind("Values", "FlySpeed", 1.5f, "Множитель скорости полёта / Flight speed multiplier");
             cfgAttackSpeed = Config.Bind("Values", "AttackSpeed", 3f, "Множитель скорости атаки / Attack speed multiplier");
             cfgGameSpeed = Config.Bind("Values", "GameSpeed", 1.5f, "Скорость игры / Game speed");
+            cfgDamage = Config.Bind("Values", "Damage", 2f, "Множитель урона / Damage multiplier");
+            cfgArmor = Config.Bind("Values", "Armor", 50f, "Добавка к броне / Armor bonus");
+            cfgJump = Config.Bind("Values", "JumpHeight", 2f, "Множитель высоты прыжка / Jump height multiplier");
+            cfgRegen = Config.Bind("Values", "Regen", 10f, "Добавка к регенерации, хп/с / Regeneration bonus, HP/s");
+            cfgMaxHp = Config.Bind("Values", "MaxHealth", 2f, "Множитель макс. здоровья / Max health multiplier");
+            cfgSpawnTiles = Config.Bind("Spawn", "TileView", true, "Показывать существ плитками / Show creatures as tiles");
 
             currentLang = string.Equals(cfgLang.Value, "EN", StringComparison.OrdinalIgnoreCase) ? Lang.EN : Lang.RU;
             itemTiles = cfgTiles.Value;
@@ -307,6 +420,12 @@ namespace FirstMod
             flySpeed = Mathf.Clamp(cfgFlySpeed.Value, 1f, FlySpeedMax);
             attackSpeed = Mathf.Clamp(cfgAttackSpeed.Value, 1f, AttackSpeedMax);
             gameSpeed = Mathf.Clamp(cfgGameSpeed.Value, 0.1f, GameSpeedMax);
+            damageMult = Mathf.Clamp(cfgDamage.Value, 1f, DamageMax);
+            armorAdd = Mathf.Clamp(cfgArmor.Value, 0f, ArmorMax);
+            jumpMult = Mathf.Clamp(cfgJump.Value, 1f, JumpMax);
+            regenAdd = Mathf.Clamp(cfgRegen.Value, 0f, RegenMax);
+            maxHpMult = Mathf.Clamp(cfgMaxHp.Value, 1f, MaxHpMax);
+            spawnTiles = cfgSpawnTiles.Value;
         }
 
         // Переключатели ON/OFF намеренно не сохраняем: читы не должны включаться сами при запуске игры.
@@ -320,6 +439,12 @@ namespace FirstMod
             cfgFlySpeed.Value = flySpeed;
             cfgAttackSpeed.Value = attackSpeed;
             cfgGameSpeed.Value = gameSpeed;
+            cfgDamage.Value = damageMult;
+            cfgArmor.Value = armorAdd;
+            cfgJump.Value = jumpMult;
+            cfgRegen.Value = regenAdd;
+            cfgMaxHp.Value = maxHpMult;
+            cfgSpawnTiles.Value = spawnTiles;
             Config.Save();
         }
 
@@ -329,8 +454,11 @@ namespace FirstMod
         {
             GodMasters.Clear();
             OneShotMasters.Clear();
-            godMode = false;
-            oneShot = false;
+            NoFallMasters.Clear();
+            godSent.Clear();
+            oneShotSent.Clear();
+            noFallSent = false;
+            hasBack = false;
         }
 
         // ---------- Хуки ----------
@@ -342,6 +470,11 @@ namespace FirstMod
             {
                 var victimMaster = self.body.master;
                 if (victimMaster && GodMasters.Contains(victimMaster.netId))
+                    return;
+
+                // «без урона от падения»: отбрасываем урон типа FallDamage, пока цель в списке
+                if (victimMaster && NoFallMasters.Count > 0 && NoFallMasters.Contains(victimMaster.netId)
+                    && (damageInfo.damageType & DamageType.FallDamage) != 0)
                     return;
 
                 if (OneShotMasters.Count > 0 && damageInfo.attacker)
@@ -367,6 +500,11 @@ namespace FirstMod
             if (moveSpeedOn) MulFloat(self, "moveSpeed", moveSpeed);
             if (critOn) SetMember(self, "crit", 100f);
             if (infJumps) SetMember(self, "maxJumpCount", 1000);
+            if (damageOn) MulFloat(self, "damage", damageMult);
+            if (armorOn) SetMember(self, "armor", GetFloat(self, "armor") + armorAdd);
+            if (jumpOn) MulFloat(self, "jumpPower", jumpMult);
+            if (regenOn) SetMember(self, "regen", GetFloat(self, "regen") + regenAdd);
+            if (maxHpOn) MulFloat(self, "maxHealth", maxHpMult);
         }
 
         // ---------- Каждый кадр ----------
@@ -571,7 +709,7 @@ namespace FirstMod
             // центральная колонка, чтобы кнопки не растягивались на всё окно
             GUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
-            GUILayout.BeginVertical(GUILayout.Width(Mathf.Min(tab == 4 ? ItemsColumnWidth : 760f, windowRect.width - 80f)));
+            GUILayout.BeginVertical(GUILayout.Width(Mathf.Min((tab == 4 || (tab == 5 && spawnTiles)) ? ItemsColumnWidth : 760f, windowRect.width - 80f)));
 
             switch (tab)
             {
@@ -618,13 +756,33 @@ namespace FirstMod
             else if (wantEn && currentLang != Lang.EN) { currentLang = Lang.EN; RebuildLabels(); }
 
             GUILayout.FlexibleSpace();
+            GUILayout.Label(T("version") + " " + ModVersion, footerStyle);
             GUILayout.Label("FirstMod by Kavoshnik", footerStyle);
         }
 
         private void DrawPlayersTab()
         {
+            // изменения списка точек применяем только в начале раскладки (см. pendingUi)
+            if (Event.current.type == EventType.Layout && pendingUi.Count > 0)
+            {
+                foreach (var act in pendingUi) act();
+                pendingUi.Clear();
+            }
+
+            playersScroll = GUILayout.BeginScrollView(playersScroll, GUILayout.Height(ListHeight(175f)));
+            DrawTeleportPlayers();
+            GUILayout.Space(16);
+            DrawPointsSection();
+            GUILayout.EndScrollView();
+        }
+
+        private void DrawTeleportPlayers()
+        {
             var me = LocalUserManager.GetFirstLocalUser()?.currentNetworkUser;
             int shown = 0;
+
+            GUILayout.Label(T("sec_players"), labelStyle);
+            GUILayout.Space(4);
 
             foreach (var user in NetworkUser.readOnlyInstancesList)
             {
@@ -644,7 +802,10 @@ namespace FirstMod
                 GUI.enabled = prev;
 
                 if (GUILayout.Button(T("tp_goto"), btnStyle, GUILayout.Width(160)))
+                {
+                    RememberBack();
                     Send("fm_tp 1 " + user.netId.Value);
+                }
                 GUILayout.EndHorizontal();
                 GUILayout.Space(6);
             }
@@ -664,12 +825,188 @@ namespace FirstMod
             }
         }
 
+        private static string CurrentSceneName()
+        {
+            return UnityEngine.SceneManagement.SceneManager.GetActiveScene().name ?? "";
+        }
+
+        private static string FormatCoord(float v)
+        {
+            return v.ToString("0.###", CultureInfo.InvariantCulture);
+        }
+
+        // запоминаем, откуда мы телепортировались (для кнопки «Вернуться назад»)
+        private void RememberBack()
+        {
+            var b = GetBody();
+            if (!b) return;
+            backPos = b.footPosition;
+            backScene = CurrentSceneName();
+            hasBack = true;
+        }
+
+        private bool PointNameTaken(string name)
+        {
+            foreach (var p in tpPoints)
+                if (string.Equals(p.name, name, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private void AddPoint(string wanted, Vector3 pos, string scene)
+        {
+            if (tpPoints.Count >= MaxTpPoints) return;
+
+            string baseName = (wanted ?? "").Trim();
+            if (baseName.Length == 0) baseName = T("point_default") + " " + (++pointSeq);
+
+            // одинаковые имена получают суффикс (2), (3), ...
+            string unique = baseName;
+            int n = 2;
+            while (PointNameTaken(unique)) unique = baseName + " (" + (n++) + ")";
+
+            tpPoints.Add(new TpPoint { name = unique, pos = pos, scene = scene });
+        }
+
+        private void SendTeleportTo(Vector3 pos, string target)
+        {
+            Send("fm_tpto " + FormatCoord(pos.x) + " " + FormatCoord(pos.y) + " " + FormatCoord(pos.z) + " " + target);
+        }
+
+        private void DrawPointsSection()
+        {
+            GUILayout.Label(T("points_title"), labelStyle);
+            GUILayout.Space(6);
+
+            GUILayout.BeginHorizontal();
+            DrawTargetButtons();
+            GUILayout.EndHorizontal();
+            GUILayout.Space(8);
+
+            string scene = CurrentSceneName();
+            var body = GetBody();
+            bool haveBody = body != null;
+            bool full = tpPoints.Count >= MaxTpPoints;
+            bool prev = GUI.enabled;
+
+            // имя + «Сохранить позицию» (пустое имя -> «Точка N»)
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(T("point_name"), labelStyle, GUILayout.Width(80), GUILayout.Height(38));
+            GUI.SetNextControlName("pointName");
+            pointName = GUILayout.TextField(pointName ?? "", 24, textStyle, GUILayout.Height(38));
+            GUI.enabled = prev && !full && haveBody;
+            if (GUILayout.Button(T("point_save"), btnStyle, GUILayout.Width(220)))
+            {
+                string wantedName = pointName;
+                Vector3 savedPos = body.footPosition;
+                string savedScene = scene;
+                pendingUi.Add(() => AddPoint(wantedName, savedPos, savedScene));
+                pointName = "";
+                GUIUtility.keyboardControl = 0;
+            }
+            GUI.enabled = prev;
+            GUILayout.EndHorizontal();
+
+            if (full)
+                GUILayout.Label(T("point_limit"), warnStyle);
+            GUILayout.Space(8);
+
+            // показываем только точки текущего этапа
+            int shown = 0;
+            for (int i = 0; i < tpPoints.Count; i++)
+            {
+                var pt = tpPoints[i];
+                if (pt.scene != scene) continue;
+                shown++;
+
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(pt.name, labelStyle, GUILayout.Height(38));
+                if (GUILayout.Button(T("point_tp"), btnStyle, GUILayout.Width(160)))
+                {
+                    if (targetKind == 0) RememberBack();
+                    SendTeleportTo(pt.pos, TargetArg());
+                }
+                if (GUILayout.Button(T("point_del"), btnStyle, GUILayout.Width(130)))
+                {
+                    var toRemove = pt;
+                    pendingUi.Add(() => tpPoints.Remove(toRemove));
+                }
+                GUILayout.EndHorizontal();
+                GUILayout.Space(4);
+            }
+
+            if (shown == 0)
+                GUILayout.Label(T("point_none"), labelStyle);
+
+            // «Вернуться назад»: на позицию, с которой мы телепортировались в прошлый раз (двигает только меня)
+            GUILayout.Space(6);
+            GUI.enabled = prev && hasBack && haveBody && backScene == scene;
+            if (GUILayout.Button(T("point_back"), btnStyle))
+            {
+                Vector3 dest = backPos;
+                RememberBack(); // повторное нажатие вернёт обратно
+                SendTeleportTo(dest, "0");
+            }
+            GUI.enabled = prev;
+
+            GUILayout.Space(6);
+            GUILayout.Label(T("point_note"), labelStyle);
+        }
+
+        // Состояние переключателя (бессмертие, ваншот) для выбранной цели.
+        // У хоста - настоящее (по серверному списку), у клиента - последняя отправленная команда.
+        private bool FlagState(HashSet<NetworkInstanceId> set, Dictionary<string, bool> sent)
+        {
+            if (NetworkServer.active)
+            {
+                FillUiTargetMasters();
+                if (uiMasters.Count == 0) return false;
+                foreach (var m in uiMasters)
+                    if (!set.Contains(m.netId)) return false;
+                return true;
+            }
+
+            bool v;
+            return sent.TryGetValue(TargetArg(), out v) && v;
+        }
+
+        private bool NoFallState()
+        {
+            if (!NetworkServer.active) return noFallSent;
+            var m = GetMaster();
+            return m != null && NoFallMasters.Contains(m.netId);
+        }
+
+        // мастера выбранной в интерфейсе цели (только для хоста, где это реальные объекты)
+        private void FillUiTargetMasters()
+        {
+            uiMasters.Clear();
+
+            if (targetKind == 1)
+            {
+                foreach (var pc in PlayerCharacterMasterController.instances)
+                    if (pc && pc.master) uiMasters.Add(pc.master);
+            }
+            else if (targetKind == 2)
+            {
+                foreach (var u in NetworkUser.readOnlyInstancesList)
+                {
+                    if (u && u.netId.Value == targetNetId && u.master) { uiMasters.Add(u.master); break; }
+                }
+            }
+            else
+            {
+                var m = GetMaster();
+                if (m) uiMasters.Add(m);
+            }
+        }
+
         private void DrawPlayerTab()
         {
-            bool g = ToggleButton(godMode, T("god"));
-            if (g != godMode)
+            bool godNow = FlagState(GodMasters, godSent);
+            bool g = ToggleButton(godNow, T("god"));
+            if (g != godNow)
             {
-                godMode = g;
+                godSent[TargetArg()] = g;
                 Send("fm_god " + (g ? "1" : "0") + " " + TargetArg());
             }
             GUILayout.Space(8);
@@ -705,6 +1042,12 @@ namespace FirstMod
             if (GUILayout.Button(T("give"), btnStyle, GUILayout.Width(140)) && TryInt(lunarText, 0, int.MaxValue, out lunarAmount))
                 Send("fm_lunar " + lunarAmount + " " + TargetArg());
             GUILayout.EndHorizontal();
+
+            if (!NetworkServer.active)
+            {
+                GUILayout.Space(8);
+                GUILayout.Label(T("state_note"), labelStyle);
+            }
         }
 
         private void DrawMovementTab()
@@ -716,10 +1059,22 @@ namespace FirstMod
             if (j != infJumps) { infJumps = j; statsChanged = true; }
             GUILayout.Space(8);
 
+            SliderRow("jumpPower", T("stat_jump"), ref jumpOn, ref jumpMult, 1f, 5f, JumpMax);
+            GUILayout.Space(8);
+
             SliderRow("flySpeed", T("fly"), ref flyOn, ref flySpeed, 1f, 10f, FlySpeedMax);
             GUILayout.Space(8);
 
             noclipOn = ToggleButton(noclipOn, T("noclip"));
+            GUILayout.Space(8);
+
+            bool nfNow = NoFallState();
+            bool nf = ToggleButton(nfNow, T("no_fall"));
+            if (nf != nfNow)
+            {
+                noFallSent = nf;
+                Send("fm_nofall " + (nf ? "1" : "0") + " 0");
+            }
             GUILayout.Space(8);
 
             GUILayout.Label(T("movement_note"), labelStyle);
@@ -727,10 +1082,11 @@ namespace FirstMod
 
         private void DrawCombatTab()
         {
-            bool o = ToggleButton(oneShot, T("oneshot"));
-            if (o != oneShot)
+            bool oneShotNow = FlagState(OneShotMasters, oneShotSent);
+            bool o = ToggleButton(oneShotNow, T("oneshot"));
+            if (o != oneShotNow)
             {
-                oneShot = o;
+                oneShotSent[TargetArg()] = o;
                 Send("fm_oneshot " + (o ? "1" : "0") + " " + TargetArg());
             }
             GUILayout.Space(8);
@@ -745,12 +1101,28 @@ namespace FirstMod
             instantCooldowns = ToggleButton(instantCooldowns, T("inst_cd"));
             GUILayout.Space(8);
 
+            SliderRow("damage", T("stat_damage"), ref damageOn, ref damageMult, 1f, 10f, DamageMax);
+            GUILayout.Space(8);
+            SliderRow("armor", T("stat_armor"), ref armorOn, ref armorAdd, 0f, 500f, ArmorMax, "+");
+            GUILayout.Space(8);
+            SliderRow("regen", T("stat_regen"), ref regenOn, ref regenAdd, 0f, 100f, RegenMax, "+");
+            GUILayout.Space(8);
+            SliderRow("maxHp", T("stat_maxhp"), ref maxHpOn, ref maxHpMult, 1f, 10f, MaxHpMax);
+            GUILayout.Space(8);
+
             if (GUILayout.Button(T("killall"), btnStyle))
                 Send("fm_killall");
+            GUILayout.Space(8);
+
+            GUILayout.Label(T("stats_note"), labelStyle);
+            if (!NetworkServer.active)
+                GUILayout.Label(T("state_note"), labelStyle);
         }
 
         private void DrawWorldTab()
         {
+            worldScroll = GUILayout.BeginScrollView(worldScroll, GUILayout.Height(ListHeight(175f)));
+
             SliderRow("gameSpeed", T("game_speed"), ref gameSpeedOn, ref gameSpeed, 0.1f, 5f, GameSpeedMax);
             GUILayout.Space(8);
 
@@ -782,6 +1154,86 @@ namespace FirstMod
                 if (total > 0) Send("fm_addtime " + total);
             }
             GUILayout.EndHorizontal();
+
+            GUILayout.Space(16);
+            DrawRunControl();
+
+            GUILayout.EndScrollView();
+        }
+
+        // Блок «Управление забегом»: только хост и только во время забега (иначе кнопки неактивны).
+        private void DrawRunControl()
+        {
+            EnsureRunLists();
+
+            GUILayout.Label(T("run_title"), labelStyle);
+            GUILayout.Space(4);
+
+            bool inRun = Run.instance != null;
+            bool prev = GUI.enabled;
+            GUI.enabled = prev && NetworkServer.active && inRun;
+
+            // сложность
+            if (difficultyLabels != null && difficultyLabels.Length > 0)
+            {
+                GUILayout.Label(T("difficulty"), labelStyle);
+                int cur = inRun ? (int)Run.instance.selectedDifficulty : -1;
+                int sel = GUILayout.SelectionGrid(cur, difficultyLabels, Mathf.Min(4, difficultyLabels.Length), tabStyle);
+                if (sel != cur && sel >= 0) Send("fm_difficulty " + sel);
+                GUILayout.Space(8);
+            }
+
+            // артефакты: по два переключателя в ряд
+            if (artifactList != null)
+            {
+                GUILayout.Label(T("artifacts"), labelStyle);
+                var mgr = RunArtifactManager.instance;
+                int col = 0;
+                foreach (var entry in artifactList)
+                {
+                    if (inRun && entry.def.requiredExpansion && !Run.instance.IsExpansionEnabled(entry.def.requiredExpansion)) continue;
+
+                    if (col == 0) GUILayout.BeginHorizontal();
+                    bool on = mgr != null && mgr.IsArtifactEnabled(entry.def);
+                    bool want = ToggleButton(on, entry.name);
+                    if (want != on) Send("fm_artifact " + entry.def.cachedName + " " + (want ? "1" : "0"));
+                    if (++col >= 2) { GUILayout.EndHorizontal(); col = 0; }
+                }
+                if (col > 0) GUILayout.EndHorizontal();
+                GUILayout.Space(8);
+            }
+
+            // переход на этап
+            GUILayout.Label(T("stage_goto"), labelStyle);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(T("search"), labelStyle, GUILayout.Width(80), GUILayout.Height(34));
+            GUI.SetNextControlName("stageSearch");
+            stageSearch = GUILayout.TextField(stageSearch ?? "", textStyle, GUILayout.Height(34));
+            GUILayout.EndHorizontal();
+            GUILayout.Space(4);
+
+            if (stageList == null)
+            {
+                GUILayout.Label(T("cat_stage"), labelStyle);
+            }
+            else
+            {
+                string filter = (stageSearch ?? "").Trim().ToLowerInvariant();
+                stageScroll = GUILayout.BeginScrollView(stageScroll, GUILayout.Height(190f));
+                foreach (var entry in stageList)
+                {
+                    if (filter.Length > 0 && !entry.lower.Contains(filter)) continue;
+                    if (inRun && entry.def.requiredExpansion && !Run.instance.IsExpansionEnabled(entry.def.requiredExpansion)) continue;
+
+                    if (GUILayout.Button(entry.name, btnStyle))
+                        Send("fm_stage " + entry.sceneName);
+                }
+                GUILayout.EndScrollView();
+            }
+
+            GUI.enabled = prev;
+            GUILayout.Space(6);
+            GUILayout.Label(T("run_note"), labelStyle);
         }
 
         private void DrawItemsTab()
@@ -976,11 +1428,18 @@ namespace FirstMod
         // Одна плитка: фон и рамка цвета редкости, иконка, число (если count > 0). true = клик.
         private bool DrawTile(Sprite icon, Color tier, string name, int count)
         {
+            return DrawTile(icon, null, tier, name, count, itemScroll.y);
+        }
+
+        // Общая отрисовка плитки: иконка - спрайт (предметы, экипировка) или текстура (портреты существ).
+        // scrollY - текущая прокрутка списка, в котором лежит плитка (нужна для наведения у краёв области).
+        private bool DrawTile(Sprite icon, Texture texture, Color tier, string name, int count, float scrollY)
+        {
             Rect r = GUILayoutUtility.GetRect(TileSize, TileSize, GUILayout.Width(TileSize), GUILayout.Height(TileSize));
             GUILayout.Space(TileGap);
 
             Vector2 mouse = Event.current.mousePosition;
-            bool inView = mouse.y >= itemScroll.y && mouse.y <= itemScroll.y + tileViewHeight;
+            bool inView = mouse.y >= scrollY && mouse.y <= scrollY + tileViewHeight;
             bool hover = inView && r.Contains(mouse);
 
             if (Event.current.type == EventType.Repaint)
@@ -998,6 +1457,7 @@ namespace FirstMod
 
                 var iconRect = new Rect(r.x + 5f, r.y + 5f, r.width - 10f, r.height - 10f);
                 if (icon) DrawSprite(iconRect, icon);
+                else if (texture) GUI.DrawTexture(iconRect, texture, ScaleMode.ScaleToFit);
                 else GUI.Label(r, string.IsNullOrEmpty(name) ? "?" : name.Substring(0, 1), warnStyle);
 
                 if (count > 0)
@@ -1024,11 +1484,20 @@ namespace FirstMod
                 return;
             }
 
-            // поиск
+            // имя под курсором берём с прошлой отрисовки (как на вкладке предметов)
+            if (Event.current.type == EventType.Repaint)
+            {
+                hoverShown = hoverNow;
+                hoverNow = null;
+            }
+
+            // поиск + переключатель вида
             GUILayout.BeginHorizontal();
             GUILayout.Label(T("search"), labelStyle, GUILayout.Width(80), GUILayout.Height(34));
             GUI.SetNextControlName("spawnSearch");
             spawnSearch = GUILayout.TextField(spawnSearch ?? "", textStyle, GUILayout.Height(34));
+            GUILayout.Space(8);
+            spawnTiles = ToggleButton(spawnTiles, T("view_tiles"), GUILayout.Width(200));
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
@@ -1048,19 +1517,40 @@ namespace FirstMod
             GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
-            spawnAlly = ToggleButton(spawnAlly, T("spawn_ally"));
+            // союзники + имя существа под курсором (в режиме плиток)
+            GUILayout.BeginHorizontal();
+            spawnAlly = ToggleButton(spawnAlly, T("spawn_ally"), GUILayout.Width(360));
+            GUILayout.Space(12);
+            GUILayout.Label(string.IsNullOrEmpty(hoverShown) ? " " : hoverShown, labelStyle, GUILayout.Height(38));
+            GUILayout.EndHorizontal();
             GUILayout.Space(8);
 
             string filter = (spawnSearch ?? "").Trim().ToLowerInvariant();
+            int cols = TileColumns();
+            int col = 0;
 
-            spawnScroll = GUILayout.BeginScrollView(spawnScroll, GUILayout.Height(ListHeight(440f)));
+            tileViewHeight = ListHeight(440f);
+            spawnScroll = GUILayout.BeginScrollView(spawnScroll, GUILayout.Height(tileViewHeight));
             foreach (var entry in spawnList)
             {
                 if (filter.Length > 0 && !entry.lower.Contains(filter)) continue;
 
-                if (GUILayout.Button(entry.name, btnStyle))
+                bool clicked;
+                if (spawnTiles)
+                {
+                    if (col == 0) GUILayout.BeginHorizontal();
+                    clicked = DrawTile(null, entry.icon, entry.boss ? BossTileColor : NormalTileColor, entry.name, -1, spawnScroll.y);
+                    if (++col >= cols) { GUILayout.EndHorizontal(); GUILayout.Space(TileGap); col = 0; }
+                }
+                else
+                {
+                    clicked = GUILayout.Button(entry.name, btnStyle);
+                }
+
+                if (clicked)
                     Send("fm_spawn " + entry.masterName + " " + spawnCount + " " + (spawnAlly ? "1" : "0"));
             }
+            if (spawnTiles && col > 0) GUILayout.EndHorizontal();
             GUILayout.EndScrollView();
         }
 
@@ -1120,6 +1610,73 @@ namespace FirstMod
             equipList = list;
         }
 
+        // Каталоги для блока «Управление забегом»: строим один раз, когда игра их загрузила.
+        private void EnsureRunLists()
+        {
+            if (stageList == null)
+            {
+                var scenes = SceneCatalog.allSceneDefs;
+                if (SceneCatalog.sceneDefCount > 0)
+                {
+                    var list = new List<StageEntry>();
+                    foreach (var def in scenes)
+                    {
+                        if (!def || def.sceneType != SceneType.Stage || def.isOfflineScene) continue;
+                        if (string.IsNullOrEmpty(def.cachedName)) continue;
+
+                        string stageName = string.IsNullOrEmpty(def.nameToken) ? def.cachedName : Language.GetString(def.nameToken);
+                        if (string.IsNullOrEmpty(stageName)) stageName = def.cachedName;
+
+                        string label = stageName + "  [" + def.cachedName + "]";
+                        list.Add(new StageEntry { def = def, sceneName = def.cachedName, name = label, lower = label.ToLowerInvariant() });
+                    }
+
+                    if (list.Count > 0)
+                    {
+                        list.Sort((x, y) => string.Compare(x.name, y.name, StringComparison.CurrentCultureIgnoreCase));
+                        stageList = list;
+                    }
+                }
+            }
+
+            if (artifactList == null)
+            {
+                if (ArtifactCatalog.artifactCount > 0)
+                {
+                    var list = new List<ArtifactEntry>();
+                    for (int ai = 0; ai < ArtifactCatalog.artifactCount; ai++)
+                    {
+                        var def = ArtifactCatalog.GetArtifactDef((ArtifactIndex)ai);
+                        if (!def || string.IsNullOrEmpty(def.cachedName)) continue;
+
+                        string artName = string.IsNullOrEmpty(def.nameToken) ? def.cachedName : Language.GetString(def.nameToken);
+                        if (string.IsNullOrEmpty(artName)) artName = def.cachedName;
+
+                        list.Add(new ArtifactEntry { def = def, name = artName });
+                    }
+
+                    if (list.Count > 0)
+                    {
+                        list.Sort((x, y) => string.Compare(x.name, y.name, StringComparison.CurrentCultureIgnoreCase));
+                        artifactList = list;
+                    }
+                }
+            }
+
+            if (difficultyLabels == null)
+            {
+                var labels = new List<string>();
+                for (int i = 0; i < 64; i++)
+                {
+                    var dd = GetDifficultyDefSafe(i);
+                    if (dd == null) break;
+                    string diffName = Language.GetString(dd.nameToken);
+                    labels.Add(string.IsNullOrEmpty(diffName) ? "#" + i : diffName);
+                }
+                if (labels.Count > 0) difficultyLabels = labels.ToArray();
+            }
+        }
+
         private void EnsureSpawnList()
         {
             if (spawnList != null) return;
@@ -1133,24 +1690,35 @@ namespace FirstMod
                 if (!master) continue;
 
                 string display = master.name;
+                Texture icon = null;
+                bool boss = false;
                 if (master.bodyPrefab)
                 {
                     var b = master.bodyPrefab.GetComponent<CharacterBody>();
-                    if (b && !string.IsNullOrEmpty(b.baseNameToken))
+                    if (b)
                     {
-                        string localized = Language.GetString(b.baseNameToken);
-                        if (!string.IsNullOrEmpty(localized)) display = localized;
+                        icon = b.portraitIcon;
+                        boss = b.isChampion;
+
+                        if (!string.IsNullOrEmpty(b.baseNameToken))
+                        {
+                            string localized = Language.GetString(b.baseNameToken);
+                            if (!string.IsNullOrEmpty(localized)) display = localized;
+                        }
                     }
                 }
 
                 // техническое имя мастера в скобках, чтобы различать похожие записи
                 string label = display + "  [" + master.name + "]";
-                list.Add(new SpawnEntry { masterName = master.name, name = label, lower = label.ToLowerInvariant() });
+                list.Add(new SpawnEntry { masterName = master.name, name = label, lower = label.ToLowerInvariant(), icon = icon, boss = boss });
             }
 
             if (list.Count == 0) return;
 
-            list.Sort((a, b) => string.Compare(a.name, b.name, StringComparison.CurrentCultureIgnoreCase));
+            // сначала боссы (чемпионы), внутри каждой группы по алфавиту
+            list.Sort((x, y) => x.boss != y.boss
+                ? (x.boss ? -1 : 1)
+                : string.Compare(x.name, y.name, StringComparison.CurrentCultureIgnoreCase));
             spawnList = list;
         }
 
@@ -1176,6 +1744,11 @@ namespace FirstMod
             new[] { "fm_addtime",     "CmdAddTime" },
             new[] { "fm_spawn",       "CmdSpawn" },
             new[] { "fm_tp",          "CmdTp" },
+            new[] { "fm_tpto",        "CmdTpTo" },
+            new[] { "fm_nofall",      "CmdNoFall" },
+            new[] { "fm_stage",       "CmdStage" },
+            new[] { "fm_difficulty",  "CmdDifficulty" },
+            new[] { "fm_artifact",    "CmdArtifact" },
         };
 
         private void RegisterCommands()
@@ -1680,6 +2253,178 @@ namespace FirstMod
             else TeleportBodyTo(senderBody, targetBody.footPosition + Vector3.up * 0.5f);
         }
 
+        // fm_tpto <x> <y> <z> <target>
+        // Телепорт цели (я / все / игрок) в точку. Для чужих игроков и «всех» - только хост.
+        // Числа - с точкой (InvariantCulture); NaN / бесконечность / абсурдные координаты отбрасываются.
+        // Если у цели нет тела (мертва) - молча ничего не делаем.
+        private static void CmdTpTo(ConCommandArgs a)
+        {
+            if (!NetworkServer.active) return;
+
+            string target = ArgStr(a, 3);
+            if (!TargetAllowed(a, target)) return;
+
+            float x, y, z;
+            if (!TryArgFloat(a, 0, out x) || !TryArgFloat(a, 1, out y) || !TryArgFloat(a, 2, out z)) return;
+
+            var bodies = new List<CharacterBody>();
+            foreach (var m in ServerTargets(a, target))
+            {
+                var b = m.GetBody();
+                if (b) bodies.Add(b);
+            }
+
+            Vector3 dest = new Vector3(x, y, z) + Vector3.up * 0.5f;
+            for (int i = 0; i < bodies.Count; i++)
+            {
+                // если телепортируем нескольких, раскладываем их по кругу, чтобы не слиплись
+                Vector3 offset = Vector3.zero;
+                if (bodies.Count > 1)
+                    offset = Quaternion.Euler(0f, 360f / bodies.Count * i, 0f) * (Vector3.forward * 2f);
+
+                TeleportBodyTo(bodies[i], dest + offset);
+            }
+        }
+
+        private static bool TryArgFloat(ConCommandArgs a, int i, out float v)
+        {
+            v = 0f;
+            if (a.userArgs == null || a.userArgs.Count <= i) return false;
+            if (!float.TryParse(a.userArgs[i], NumberStyles.Float, CultureInfo.InvariantCulture, out v)) return false;
+            return !float.IsNaN(v) && !float.IsInfinity(v) && Mathf.Abs(v) < 100000f;
+        }
+
+        // fm_nofall <0|1> <target>
+        private static void CmdNoFall(ConCommandArgs a)
+        {
+            if (!NetworkServer.active) return;
+            string target = ArgStr(a, 1);
+            if (!TargetAllowed(a, target)) return;
+            SetFlag(NoFallMasters, a, ArgBool(a, 0), target);
+        }
+
+        // DifficultyCatalog.difficultyDefs закрыт, поэтому идём по индексам через публичный GetDifficultyDef
+        private static DifficultyDef GetDifficultyDefSafe(int index)
+        {
+            if (index < 0) return null;
+            try { return DifficultyCatalog.GetDifficultyDef((DifficultyIndex)index); }
+            catch (Exception) { return null; }
+        }
+
+        private static SceneDef FindStage(string name)
+        {
+            var scenes = SceneCatalog.allSceneDefs;
+
+            foreach (var def in scenes)
+            {
+                if (def && def.sceneType == SceneType.Stage && !def.isOfflineScene
+                    && string.Equals(def.cachedName, name, StringComparison.OrdinalIgnoreCase))
+                    return def;
+            }
+            return null;
+        }
+
+        private static ArtifactDef FindArtifact(string name)
+        {
+            for (int i = 0; i < ArtifactCatalog.artifactCount; i++)
+            {
+                var def = ArtifactCatalog.GetArtifactDef((ArtifactIndex)i);
+                if (def && string.Equals(def.cachedName, name, StringComparison.OrdinalIgnoreCase))
+                    return def;
+            }
+            return null;
+        }
+
+        // fm_stage <sceneName>  (только хост; неизвестное имя игнорируется)
+        private static void CmdStage(ConCommandArgs a)
+        {
+            if (!NetworkServer.active || !IsHostSender(a)) return;
+
+            var run = Run.instance;
+            if (!run) return;
+
+            var def = FindStage(ArgStr(a, 0));
+            if (!def) return;
+            if (def.requiredExpansion && !run.IsExpansionEnabled(def.requiredExpansion)) return;
+
+            run.AdvanceStage(def);
+        }
+
+        // fm_difficulty <index>  (только хост; индекс проверяется по каталогу)
+        private static void CmdDifficulty(ConCommandArgs a)
+        {
+            if (!NetworkServer.active || !IsHostSender(a)) return;
+
+            var run = Run.instance;
+            if (!run) return;
+
+            int idx = ArgInt(a, 0, -1);
+            var chosenDef = GetDifficultyDefSafe(idx);
+            if (chosenDef == null) return;
+
+            var index = (DifficultyIndex)idx;
+            if (run.selectedDifficulty == index) return;
+
+            // от сложности зависят предметы-«помощники» Drizzle / Monsoon у игроков
+            foreach (var pc in PlayerCharacterMasterController.instances)
+            {
+                if (!pc || !pc.master || !pc.master.inventory) continue;
+
+                var inv = pc.master.inventory;
+                inv.ResetItemPermanent(RoR2Content.Items.DrizzlePlayerHelper);
+                inv.ResetItemPermanent(RoR2Content.Items.MonsoonPlayerHelper);
+                if (index == DifficultyIndex.Easy)
+                    inv.GiveItemPermanent(RoR2Content.Items.DrizzlePlayerHelper, 1);
+                else if (chosenDef.countsAsHardMode)
+                    inv.GiveItemPermanent(RoR2Content.Items.MonsoonPlayerHelper, 1);
+            }
+
+            run.selectedDifficulty = index;
+        }
+
+        // fm_artifact <name> <0|1>  (только хост; имя проверяется по каталогу)
+        private static void CmdArtifact(ConCommandArgs a)
+        {
+            if (!NetworkServer.active || !IsHostSender(a)) return;
+
+            var run = Run.instance;
+            var mgr = RunArtifactManager.instance;
+            if (!run || mgr == null) return;
+
+            var def = FindArtifact(ArgStr(a, 0));
+            if (!def) return;
+            if (def.requiredExpansion && !run.IsExpansionEnabled(def.requiredExpansion)) return;
+
+            SetArtifactEnabledCompat(mgr, def, ArgBool(a, 1));
+        }
+
+        private static MethodInfo setArtifactMethod;
+        private static bool setArtifactLookedUp;
+
+        // SetArtifactEnabled в этой версии игры закрыт; у RunArtifactManager есть серверный метод
+        // SetArtifactEnabledServer. Ищем любой из двух подходящих по сигнатуре (ArtifactDef, bool).
+        private static void SetArtifactEnabledCompat(RunArtifactManager mgr, ArtifactDef def, bool enabled)
+        {
+            if (!setArtifactLookedUp)
+            {
+                setArtifactLookedUp = true;
+                const BindingFlags all = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+                foreach (var name in new[] { "SetArtifactEnabledServer", "SetArtifactEnabled" })
+                {
+                    setArtifactMethod = typeof(RunArtifactManager).GetMethod(name, all, null,
+                        new[] { typeof(ArtifactDef), typeof(bool) }, null);
+                    if (setArtifactMethod != null) break;
+                }
+            }
+
+            if (setArtifactMethod == null)
+            {
+                if (instance) instance.Logger.LogWarning("fm_artifact: не найден метод включения артефактов.");
+                return;
+            }
+            setArtifactMethod.Invoke(mgr, new object[] { def, enabled });
+        }
+
         // Тело клиента управляется его собственным клиентом (мотор с "авторитетом" клиента),
         // поэтому серверный телепорт может тихо не сработать или тут же откатиться.
         // Телепортируем штатно, через полсекунды проверяем результат и, если тело осталось далеко,
@@ -1716,6 +2461,7 @@ namespace FirstMod
             float shieldFrac = oldFullShield > 0f ? Mathf.Clamp01(oldHc.shield / oldFullShield) : 1f;
 
             Quaternion rot = Quaternion.Euler(0f, current.transform.eulerAngles.y, 0f);
+            GameObject oldObject = current.gameObject;
             master.DestroyBody();
             master.Respawn(footPosition, rot);
 
@@ -1729,6 +2475,10 @@ namespace FirstMod
                 if (fresh && fresh.healthComponent && fresh.healthComponent.fullHealth >= oldFull * 0.95f) break;
             }
             if (!fresh || !fresh.healthComponent) yield break;
+
+            // страховка от «двойного тела»: если старое тело не исчезло само, убираем его
+            if (oldObject && oldObject != fresh.gameObject)
+                NetworkServer.Destroy(oldObject);
 
             var hc = fresh.healthComponent;
             SetHealthValue(hc, "health", Mathf.Max(1f, hpFrac * hc.fullHealth));
@@ -2212,7 +2962,8 @@ namespace FirstMod
                 text = value.ToString();
         }
 
-        private void SliderRow(string id, string label, ref bool on, ref float value, float min, float max, float cap)
+        // prefix: "x" для множителей, "+" для добавок (подпись перед числовым полем)
+        private void SliderRow(string id, string label, ref bool on, ref float value, float min, float max, float cap, string prefix = "x")
         {
             GUILayout.BeginHorizontal();
 
@@ -2227,7 +2978,7 @@ namespace FirstMod
                 if (numEditing == id) { numEditing = null; GUIUtility.keyboardControl = 0; }
             }
 
-            GUILayout.Label("x", labelStyle, GUILayout.Width(14), GUILayout.Height(38));
+            GUILayout.Label(prefix, labelStyle, GUILayout.Width(14), GUILayout.Height(38));
             NumField(id, ref newVal, min, cap, 84f);
 
             GUILayout.EndHorizontal();
