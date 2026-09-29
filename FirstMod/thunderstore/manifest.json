@@ -1,7 +1,7 @@
 {
     "name": "FirstMod",
     "version_number": "0.8.0",
-    "website_url": "",
+    "website_url": "https://github.com/KaVoshnik/FirstMod",
     "description": "Multiplayer-aware cheat menu: items, spawn, teleports, run control, presets. RU/EN UI.",
     "dependencies": [
         "bbepis-BepInExPack-5.4.2117",
