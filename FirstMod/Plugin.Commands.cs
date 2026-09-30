@@ -47,6 +47,8 @@ namespace FirstMod
             new[] { "fm_killaim",     "CmdKillAim" },
             new[] { "fm_spawnobj",    "CmdSpawnObj" },
             new[] { "fm_body",        "CmdBody" },
+            new[] { "fm_portal",      "CmdPortal" },
+            new[] { "fm_chestrun",    "CmdChestRun" },
         };
 
         private void RegisterCommands()

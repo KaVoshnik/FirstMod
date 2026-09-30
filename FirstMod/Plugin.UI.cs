@@ -85,6 +85,7 @@ namespace FirstMod
         private void OnGUI()
         {
             if (!stylesReady) InitStyles();
+            DrawEsp();
             if (!showMenu) { DrawHud(); return; }
 
             // 1280x720 по центру (на маленьком экране уменьшится)
@@ -571,6 +572,12 @@ namespace FirstMod
 
             GUILayout.Space(16);
             DrawRunControl();
+
+            GUILayout.Space(16);
+            DrawPortalsSection();
+
+            GUILayout.Space(16);
+            DrawEspSection();
 
             GUILayout.EndScrollView();
         }

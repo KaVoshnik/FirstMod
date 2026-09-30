@@ -128,6 +128,8 @@ namespace FirstMod
 
             Loc["hud"]            = new[] { "HUD со включёнными функциями", "Active Features HUD" };
             Loc["hotkeys_title"]  = new[] { "Горячие клавиши (меняются в конфиге):", "Hotkeys (change in the config):" };
+
+            EspLoc();
         }
 
         private void ExtraRebuildLabels()
@@ -142,6 +144,7 @@ namespace FirstMod
             On.RoR2.PurchaseInteraction.CanBeAffordedByInteractor += OnCanAfford;
             On.RoR2.PurchaseInteraction.OnInteractionBegin += OnPurchaseBegin;
             LoadPoints();
+            EspInit();
         }
 
         private void ExtraDestroy()
@@ -159,6 +162,7 @@ namespace FirstMod
 
         private void ExtraRunChanged()
         {
+            EspRunChanged();
             FreeBuyMasters.Clear();
             freeBuyMap.Clear();
             freeBuySent = false;
@@ -208,6 +212,7 @@ namespace FirstMod
             if (typingInField || cfgKeyHud == null) return;
 
             if (KeyPressed(cfgKeyHud)) hudOn = !hudOn;
+            EspUpdate();
             if (KeyPressed(cfgKeyFly)) flyOn = !flyOn;
             if (KeyPressed(cfgKeyNoclip)) noclipOn = !noclipOn;
             if (KeyPressed(cfgKeyTpAim)) TeleportToAim();
@@ -818,6 +823,9 @@ namespace FirstMod
             SliderRow("magnet", T("magnet"), ref magnetOn, ref magnetRadius, 5f, 100f, 300f, "");
             GUI.enabled = prev;
             GUILayout.Space(8);
+
+            DrawChestRunSection();
+            GUILayout.Space(8);
         }
 
         private void DrawCombatExtras()
@@ -883,7 +891,8 @@ namespace FirstMod
                 KeyName(cfgKeyNoclip) + " - noclip    " +
                 KeyName(cfgKeyTpAim) + " - " + T("tp_aim") + "    " +
                 KeyName(cfgKeyKillAim) + " - " + T("kill_aim") + "    " +
-                KeyName(cfgKeyHud) + " - HUD",
+                KeyName(cfgKeyHud) + " - HUD    " +
+                KeyName(cfgKeyEsp) + " - ESP",
                 labelStyle);
         }
 
@@ -927,6 +936,7 @@ namespace FirstMod
             AddHud(magnetOn, T("magnet"));
             AddHud(freezeAI, T("freeze_ai"));
             AddHud(noSpawns, T("no_spawns"));
+            AddHud(espOn, "ESP");
 
             if (hudLines == 0) return;
 
