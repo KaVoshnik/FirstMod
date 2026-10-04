@@ -13,7 +13,7 @@ Server-side features work in multiplayer when the mod is installed on the host.
 - **Items**: item and equipment catalog with icon tiles, rarity filter, tooltips, search by name and description.
 - **Spawn**: creatures (enemy or ally, optional elite affix, at the crosshair) and interactables (chests, shrines, printers...).
 - **Players**: teleport between players, saved teleport points (kept between sessions).
-- **Character**: swap survivor and skin mid-run, save / load item builds.
+- **Character**: swap survivor, skin and skill variants mid-run (console: `fm_body <body> <skin> <target> [variants]`), save / load item builds.
 - **HUD** with active features and hotkeys (F5 god, F6 fly, F7 noclip, F8 teleport to crosshair, F9 kill target, F10 HUD, F11 ESP).
 
 Settings and hotkeys: `BepInEx/config/com.Kavoshnik.firstmod.cfg`.

@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using BepInEx.Configuration;
 using RoR2;
+using RoR2.Skills;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -11,6 +12,7 @@ namespace FirstMod
 {
     // Всё, что добавлено в 0.8.0: бесплатные покупки, магнит лута, HUD, горячие клавиши, спавн объектов,
     // смена персонажа и скина, пресеты билдов, управление директором, телепорты в прицел / к телепортеру / к сундуку.
+    // 0.9.0: при смене персонажа можно выбрать вариант каждого скилла (fm_body ... <варианты через запятую>).
     public partial class Plugin
     {
         // ---------- Состояние ----------
@@ -61,6 +63,9 @@ namespace FirstMod
         private int survChoice = -1;
         private string[] skinLabels;
         private int skinChoice;
+        private string[] skillSlotKeys;      // ключ Loc (slot_primary...) или имя GenericSkill; T() вернёт ключ как есть, если перевода нет
+        private string[][] skillVariantLabels;
+        private int[] skillChoice;
 
         // пресеты билдов
         private readonly List<string> presetFiles = new List<string>();
@@ -104,8 +109,13 @@ namespace FirstMod
             Loc["survivor_label"] = new[] { "Персонаж:", "Survivor:" };
             Loc["skin_label"]     = new[] { "Скин:", "Skin:" };
             Loc["apply"]          = new[] { "Применить", "Apply" };
-            Loc["body_note"]      = new[] { "Смена персонажа пересоздаёт тело, предметы сохраняются. Других игроков меняет только хост.",
-                                            "Swapping respawns the body, items are kept. Only the host can change other players." };
+            Loc["skills_label"]   = new[] { "Скиллы:", "Skills:" };
+            Loc["slot_primary"]   = new[] { "Основной", "Primary" };
+            Loc["slot_secondary"] = new[] { "Вторичный", "Secondary" };
+            Loc["slot_utility"]   = new[] { "Мобильность", "Utility" };
+            Loc["slot_special"]   = new[] { "Особый", "Special" };
+            Loc["body_note"]      = new[] { "Смена персонажа пересоздаёт тело, предметы сохраняются. Выбранные скины и скиллы применяются сразу. Других игроков меняет только хост.",
+                                            "Swapping respawns the body, items are kept. Chosen skin and skill variants are applied right away. Only the host can change other players." };
 
             Loc["presets_title"]  = new[] { "Пресеты билдов", "Build presets" };
             Loc["preset_name"]    = new[] { "Имя:", "Name:" };
@@ -1001,7 +1011,194 @@ namespace FirstMod
             skinLabels = labels;
         }
 
-        // fm_body <bodyName> <skinIndex> <target>  (себя может менять любой, остальных - хост)
+        // Слоты скиллов выбранного выжившего: индекс слота в лоадауте = порядок GenericSkill на префабе тела.
+        private void RefreshSkills()
+        {
+            skillSlotKeys = null;
+            skillVariantLabels = null;
+            skillChoice = null;
+            if (survList == null || survChoice < 0 || survChoice >= survList.Count) return;
+
+            var prefab = BodyCatalog.FindBodyPrefab(survList[survChoice].bodyName);
+            if (!prefab) return;
+
+            var slots = prefab.GetComponents<GenericSkill>();
+            if (slots == null || slots.Length == 0) return;
+
+            var locator = prefab.GetComponent<SkillLocator>();
+            var keys = new string[slots.Length];
+            var labels = new string[slots.Length][];
+
+            for (int i = 0; i < slots.Length; i++)
+            {
+                var gs = slots[i];
+                if (locator && gs)
+                {
+                    if (gs == locator.primary) keys[i] = "slot_primary";
+                    else if (gs == locator.secondary) keys[i] = "slot_secondary";
+                    else if (gs == locator.utility) keys[i] = "slot_utility";
+                    else if (gs == locator.special) keys[i] = "slot_special";
+                }
+                if (string.IsNullOrEmpty(keys[i]))
+                    keys[i] = gs && !string.IsNullOrEmpty(gs.skillName) ? gs.skillName : "#" + (i + 1);
+
+                var family = gs ? gs.skillFamily : null;
+                var variants = family ? family.variants : null;
+                if (variants == null || variants.Length < 2) continue; // выбирать нечего - слот не показываем
+
+                var names = new string[variants.Length];
+                for (int v = 0; v < variants.Length; v++)
+                {
+                    var def = variants[v].skillDef;
+                    string n = def && !string.IsNullOrEmpty(def.skillNameToken) ? Language.GetString(def.skillNameToken) : "";
+                    names[v] = string.IsNullOrEmpty(n) || (def && n == def.skillNameToken) ? "#" + (v + 1) : n;
+                }
+                labels[i] = names;
+            }
+
+            skillSlotKeys = keys;
+            skillVariantLabels = labels;
+            skillChoice = new int[slots.Length];
+        }
+
+        private bool HasSkillChoices()
+        {
+            if (skillVariantLabels == null) return false;
+            foreach (var l in skillVariantLabels) if (l != null) return true;
+            return false;
+        }
+
+        // Варианты по слотам идут отдельными аргументами с индекса start ("0 1 0 0"); запятые тоже понимаем ("0,1,0,0"),
+        // потому что консоль игры может резать аргументы по запятым. Пусто = скиллы не трогаем.
+        private static int[] ParseVariants(ConCommandArgs a, int start)
+        {
+            if (a.userArgs == null || a.userArgs.Count <= start) return null;
+
+            var list = new List<int>();
+            for (int i = start; i < a.userArgs.Count; i++)
+            {
+                foreach (var part in a.userArgs[i].Split(','))
+                {
+                    if (part.Length == 0) continue;
+                    int v;
+                    if (!int.TryParse(part, NumberStyles.Integer, CultureInfo.InvariantCulture, out v)) v = 0;
+                    list.Add(Mathf.Max(0, v));
+                }
+            }
+            return list.Count == 0 ? null : list.ToArray();
+        }
+
+        private static void ApplySkillVariants(CharacterMaster m, BodyIndex bodyIndex, GameObject prefab, int[] variants)
+        {
+            if (variants == null || m.loadout == null || bodyIndex == BodyIndex.None || !prefab) return;
+
+            var slots = prefab.GetComponents<GenericSkill>();
+            for (int i = 0; i < slots.Length && i < variants.Length; i++)
+            {
+                var family = slots[i] ? slots[i].skillFamily : null;
+                if (!family || family.variants == null || family.variants.Length < 2) continue;
+
+                uint variant = (uint)Mathf.Min(variants[i], family.variants.Length - 1);
+                try
+                {
+                    m.loadout.bodyLoadoutManager.SetSkillVariant(bodyIndex, i, variant);
+                    uint back = m.loadout.bodyLoadoutManager.GetSkillVariant(bodyIndex, i);
+                    if (instance) instance.Logger.LogInfo("fm_body: слот " + i + ": запрошен вариант " + variant + ", в лоадауте " + back);
+                }
+                catch (Exception e)
+                {
+                    if (instance) instance.Logger.LogWarning("fm_body: скилл (слот " + i + ") не применён: " + e.Message);
+                }
+            }
+        }
+
+        // Вызов метода с одним аргументом по имени (для API, сигнатуры которого могут отличаться между версиями игры).
+        private static bool TryCall(object target, string method, object arg)
+        {
+            if (target == null || arg == null) return false;
+            try
+            {
+                const System.Reflection.BindingFlags f = System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                foreach (var mi in target.GetType().GetMethods(f))
+                {
+                    if (mi.Name != method) continue;
+                    var ps = mi.GetParameters();
+                    if (ps.Length != 1 || !ps[0].ParameterType.IsInstanceOfType(arg)) continue;
+                    mi.Invoke(target, new[] { arg });
+                    return true;
+                }
+            }
+            catch (Exception e)
+            {
+                if (instance) instance.Logger.LogWarning("fm_body: " + method + " не удался: " + e.Message);
+                return false;
+            }
+            if (instance) instance.Logger.LogWarning("fm_body: метод " + method + " не найден у " + target.GetType().Name);
+            return false;
+        }
+
+        private static object GetMember(object target, string name)
+        {
+            if (target == null) return null;
+            const System.Reflection.BindingFlags f = System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            var t = target.GetType();
+            var fi = t.GetField(name, f);
+            if (fi != null) return fi.GetValue(target);
+            var pi = t.GetProperty(name, f);
+            return pi != null ? pi.GetValue(target, null) : null;
+        }
+
+        // Лоадаут игрока на сервере может пересобираться из NetworkUser (при респавне / смене этапа) - обновляем и его.
+        private static void MirrorLoadoutToUser(CharacterMaster m)
+        {
+            var user = m.playerCharacterMasterController ? m.playerCharacterMasterController.networkUser : null;
+            if (!user) return;
+            TryCall(GetMember(user, "networkLoadout"), "SetLoadout", m.loadout);
+        }
+
+        // После респавна сверяем реальные скиллы тела с выбранными; если не совпали - ставим напрямую.
+        private static System.Collections.IEnumerator VerifySkills(CharacterMaster m, GameObject prefab, int[] variants)
+        {
+            yield return new WaitForSecondsRealtime(0.3f);
+            if (!m) yield break;
+            var body = m.GetBody();
+            if (!body) yield break;
+
+            TryCall(body, "SetLoadoutServer", m.loadout);
+            yield return null;
+            yield return null;
+
+            body = m.GetBody();
+            if (!body || !prefab) yield break;
+
+            var proto = prefab.GetComponents<GenericSkill>();
+            var live = body.GetComponents<GenericSkill>();
+            for (int i = 0; i < proto.Length && i < variants.Length && i < live.Length; i++)
+            {
+                var family = proto[i] ? proto[i].skillFamily : null;
+                if (!family || family.variants == null || family.variants.Length < 2 || !live[i]) continue;
+
+                int v = Mathf.Min(variants[i], family.variants.Length - 1);
+                SkillDef want = family.variants[v].skillDef;
+                if (!want) continue;
+
+                if (live[i].skillDef == want)
+                {
+                    if (instance) instance.Logger.LogInfo("fm_body: слот " + i + " ок (" + want.skillNameToken + ")");
+                    continue;
+                }
+
+                if (instance) instance.Logger.LogWarning("fm_body: слот " + i + " не совпал: ожидался "
+                    + want.skillNameToken + ", у тела " + (live[i].skillDef ? live[i].skillDef.skillNameToken : "null") + " - ставлю напрямую");
+                try { live[i].SetBaseSkill(want); }
+                catch (Exception e) { if (instance) instance.Logger.LogWarning("fm_body: SetBaseSkill не удался: " + e.Message); }
+            }
+        }
+
+        // fm_body <bodyName> <skinIndex> <target> [вариант слота 0] [вариант слота 1] ...
+        // (себя может менять любой, остальных - хост)
         private static void CmdBody(ConCommandArgs a)
         {
             if (!NetworkServer.active) return;
@@ -1014,6 +1211,10 @@ namespace FirstMod
 
             var bodyIndex = BodyCatalog.FindBodyIndex(bodyName);
             uint skin = (uint)Mathf.Max(0, ArgInt(a, 1, 0));
+            int[] skillVariants = ParseVariants(a, 3); // null = скиллы не трогаем (старый формат команды)
+            if (instance) instance.Logger.LogInfo("fm_body: получено body=" + bodyName + " skin=" + skin + " target=" + target
+                + " skills=[" + (skillVariants != null ? string.Join(",", skillVariants) : "") + "] args=" + (a.userArgs != null ? a.userArgs.Count : 0)
+                + " (build " + ModVersion + "-skills3)");
 
             foreach (var m in ServerTargets(a, target))
             {
@@ -1033,8 +1234,15 @@ namespace FirstMod
                     if (instance) instance.Logger.LogWarning("fm_body: скин не применён: " + e.Message);
                 }
 
+                ApplySkillVariants(m, bodyIndex, prefab, skillVariants);
+
+                if (skillVariants != null) MirrorLoadoutToUser(m);
+
                 if (old) m.DestroyBody();
                 m.Respawn(pos, rot);
+
+                if (skillVariants != null && instance)
+                    instance.StartCoroutine(VerifySkills(m, prefab, skillVariants));
             }
         }
 
@@ -1061,7 +1269,7 @@ namespace FirstMod
                 if (sel != survChoice)
                 {
                     int chosen = sel;
-                    pendingUi.Add(() => { survChoice = chosen; RefreshSkins(); }); // набор скинов меняет раскладку
+                    pendingUi.Add(() => { survChoice = chosen; RefreshSkins(); RefreshSkills(); }); // набор скинов и скиллов меняет раскладку
                 }
                 GUILayout.Space(6);
 
@@ -1072,10 +1280,25 @@ namespace FirstMod
                     GUILayout.Space(6);
                 }
 
+                if (HasSkillChoices() && skillChoice != null && skillChoice.Length == skillVariantLabels.Length)
+                {
+                    GUILayout.Label(T("skills_label"), labelStyle);
+                    for (int i = 0; i < skillVariantLabels.Length; i++)
+                    {
+                        var labels = skillVariantLabels[i];
+                        if (labels == null) continue;
+
+                        GUILayout.Label(T(skillSlotKeys[i]), labelStyle);
+                        skillChoice[i] = GUILayout.SelectionGrid(Mathf.Clamp(skillChoice[i], 0, labels.Length - 1), labels, Mathf.Min(3, labels.Length), tabStyle);
+                    }
+                    GUILayout.Space(6);
+                }
+
                 bool prev = GUI.enabled;
                 GUI.enabled = prev && survChoice >= 0;
                 if (GUILayout.Button(T("apply"), btnStyle) && survChoice >= 0 && survChoice < survList.Count)
-                    Send("fm_body " + survList[survChoice].bodyName + " " + skinChoice + " " + TargetArg());
+                    Send("fm_body " + survList[survChoice].bodyName + " " + skinChoice + " " + TargetArg()
+                         + (HasSkillChoices() && skillChoice != null ? " " + string.Join(" ", skillChoice) : ""));
                 GUI.enabled = prev;
                 GUILayout.Space(4);
                 GUILayout.Label(T("body_note"), labelStyle);
