@@ -34,7 +34,7 @@ Items, spawns, drones, survivors, teleports and run control in one clean in-game
 
 ## In action
 
-![Drones demo](https://raw.githubusercontent.com/KaVoshnik/FirstMod/main/docs/screenshots/demo-drones.gif)
+![ESP Demo](https://raw.githubusercontent.com/KaVoshnik/FirstMod/main/docs/screenshots/demo-esp.gif)
 ![Flight and noclip demo](https://raw.githubusercontent.com/KaVoshnik/FirstMod/main/docs/screenshots/demo-flight.gif)
 
 ## Features

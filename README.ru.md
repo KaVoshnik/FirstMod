@@ -34,7 +34,7 @@
 
 ## В деле
 
-![Дроны](https://raw.githubusercontent.com/KaVoshnik/FirstMod/main/docs/screenshots/demo-drones.gif)
+![ESP](https://raw.githubusercontent.com/KaVoshnik/FirstMod/main/docs/screenshots/demo-esp.gif)
 ![Полёт и noclip](https://raw.githubusercontent.com/KaVoshnik/FirstMod/main/docs/screenshots/demo-flight.gif)
 
 ## Возможности
