@@ -89,8 +89,8 @@ namespace FirstMod
             if (!showMenu) { DrawHud(); return; }
 
             // 1280x720 по центру (на маленьком экране уменьшится)
-            float w = Mathf.Min(1280f, Screen.width - 40f);
-            float h = Mathf.Min(720f, Screen.height - 40f);
+            float w = Mathf.Min(1800f, Screen.width - 40f);
+            float h = Mathf.Min(1000f, Screen.height - 40f);
             windowRect = new Rect((Screen.width - w) / 2f, (Screen.height - h) / 2f, w, h);
 
             GUILayout.Window(0x4D0D, windowRect, DrawWindow, "FirstMod", windowStyle);
@@ -98,6 +98,7 @@ namespace FirstMod
 
         private void DrawWindow(int id)
         {
+            if (Event.current.type == EventType.Layout) listTopApplied = listTopNext;
             RunPendingUi();
             tab = GUILayout.Toolbar(tab, tabLabels, tabStyle);
             GUILayout.Space(12);
@@ -108,10 +109,13 @@ namespace FirstMod
                 GUILayout.Space(8);
             }
 
+            if (Event.current.type == EventType.Repaint)
+                columnTopNext = GUILayoutUtility.GetLastRect().yMax;
+
             // центральная колонка, чтобы кнопки не растягивались на всё окно
             GUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
-            GUILayout.BeginVertical(GUILayout.Width(Mathf.Min((tab == 4 || (tab == 5 && spawnTiles)) ? ItemsColumnWidth : 760f, windowRect.width - 80f)));
+            GUILayout.BeginVertical(GUILayout.Width(ColumnWidth(tab == 4 || (tab == 5 && spawnTiles))));
 
             switch (tab)
             {
@@ -174,7 +178,7 @@ namespace FirstMod
                 pendingUi.Clear();
             }
 
-            playersScroll = GUILayout.BeginScrollView(playersScroll, GUILayout.Height(ListHeight(175f)));
+            playersScroll = BeginScroll(playersScroll, FitHeight(175f));
             DrawTeleportPlayers();
             GUILayout.Space(16);
             DrawPointsSection();
@@ -533,7 +537,7 @@ namespace FirstMod
 
         private void DrawWorldTab()
         {
-            worldScroll = GUILayout.BeginScrollView(worldScroll, GUILayout.Height(ListHeight(175f)));
+            worldScroll = BeginScroll(worldScroll, FitHeight(175f));
 
             SliderRow("gameSpeed", T("game_speed"), ref gameSpeedOn, ref gameSpeed, 0.1f, 5f, GameSpeedMax);
             GUILayout.Space(8);
@@ -640,7 +644,7 @@ namespace FirstMod
             else
             {
                 string filter = (stageSearch ?? "").Trim().ToLowerInvariant();
-                stageScroll = GUILayout.BeginScrollView(stageScroll, GUILayout.Height(190f));
+                stageScroll = BeginScroll(stageScroll, 190f);
                 foreach (var entry in stageList)
                 {
                     if (filter.Length > 0 && !entry.lower.Contains(filter)) continue;
@@ -712,8 +716,8 @@ namespace FirstMod
                     Send("fm_equip none " + TargetArg());
                 GUILayout.Space(8);
 
-                tileViewHeight = ListHeight(430f);
-                itemScroll = GUILayout.BeginScrollView(itemScroll, GUILayout.Height(tileViewHeight));
+                tileViewHeight = FitHeight(430f);
+                itemScroll = BeginScroll(itemScroll, tileViewHeight);
                 foreach (var entry in equipList)
                 {
                     if (filter.Length > 0 && !entry.lower.Contains(filter)) continue;
@@ -764,8 +768,8 @@ namespace FirstMod
             var localMaster = GetMaster();
             var inv = localMaster ? localMaster.inventory : null;
 
-            tileViewHeight = ListHeight(removeMode ? 480f : 430f);
-            itemScroll = GUILayout.BeginScrollView(itemScroll, GUILayout.Height(tileViewHeight));
+            tileViewHeight = FitHeight(removeMode ? 480f : 430f);
+            itemScroll = BeginScroll(itemScroll, tileViewHeight);
             foreach (var entry in itemList)
             {
                 if (filter.Length > 0 && !entry.lower.Contains(filter)) continue;
@@ -823,12 +827,13 @@ namespace FirstMod
         {
             if (filter == 0) return true;
             if (filter <= 5) return order == filter - 1;
+            if (filter == 7) return order >= 9; // прочие / новые тиры
             return order >= 5 && order <= 8;
         }
 
         private int TileColumns()
         {
-            float colWidth = Mathf.Min(ItemsColumnWidth, windowRect.width - 80f);
+            float colWidth = ColumnWidth(true);
             // запас под полосу прокрутки
             return Mathf.Max(1, (int)((colWidth - 30f) / (TileSize + TileGap)));
         }
@@ -966,8 +971,8 @@ namespace FirstMod
             int cols = TileColumns();
             int col = 0;
 
-            tileViewHeight = ListHeight(490f);
-            spawnScroll = GUILayout.BeginScrollView(spawnScroll, GUILayout.Height(tileViewHeight));
+            tileViewHeight = FitHeight(490f);
+            spawnScroll = BeginScroll(spawnScroll, tileViewHeight);
             foreach (var entry in spawnList)
             {
                 if (filter.Length > 0 && !entry.lower.Contains(filter)) continue;

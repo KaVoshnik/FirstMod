@@ -16,7 +16,7 @@ namespace FirstMod
     {
         // Версия мода: единственное место, где её нужно менять (атрибут BepInEx и вкладка «Настройки»).
         // Правило: мелкое обновление +0.0.1, крупное +0.1.0.
-        public const string ModVersion = "0.10.0";
+        public const string ModVersion = "0.10.1";
 
         // ---------- Состояние (клиентская часть) ----------
         private bool showMenu;
@@ -84,7 +84,7 @@ namespace FirstMod
         private int itemAmount = 1;
         private Vector2 itemScroll;
         private bool itemTiles = true;      // плитки с иконками или обычный список
-        private int itemRarity;             // 0 = все, 1..6 = фильтр по редкости
+        private int itemRarity;             // 0 = все, 1..7 = фильтр по редкости (7 = прочие тиры)
         private string hoverNow, hoverShown; // имя под курсором (показываем с задержкой в кадр)
         private float tileViewHeight;       // высота видимой области прокрутки (чтобы не ловить наведение вне неё)
         private const float TileSize = 64f;
@@ -346,7 +346,7 @@ namespace FirstMod
             itemModeLabels = new[] { T("itemmode_give"), T("itemmode_take"), T("itemmode_equip") };
             rarityLabels = new[]
             {
-                T("r_all"), T("r_white"), T("r_green"), T("r_red"), T("r_lunar"), T("r_boss"), T("r_void")
+                T("r_all"), T("r_white"), T("r_green"), T("r_red"), T("r_lunar"), T("r_boss"), T("r_void"), T("r_other")
             };
             ExtraRebuildLabels();
         }

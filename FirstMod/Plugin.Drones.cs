@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Reflection;
 using RoR2;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -12,70 +13,157 @@ namespace FirstMod
     {
         // ---------- Иконки предметов / экипировки ----------
         // В новых сборках игры ItemDef.pickupIconSprite может быть пустым (иконка подгружается отдельно),
-        // поэтому, если спрайта нет, берём иконку из PickupCatalog (её же показывает сама игра).
+        // поэтому, если спрайта нет, берём иконку из PickupCatalog, а затем ищем любое поле с "icon"
+        // (спрайт, текстура или Addressables-ссылка) через рефлексию.
         private readonly Dictionary<object, Sprite> iconSpriteCache = new Dictionary<object, Sprite>();
         private readonly Dictionary<object, Texture> iconTextureCache = new Dictionary<object, Texture>();
+        private readonly HashSet<object> assetLoadStarted = new HashSet<object>();
         private bool iconMissLogged;
+        private const BindingFlags AnyInst = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
         private void ResolveItemIcon(ItemDef def, out Sprite sprite, out Texture texture)
         {
             sprite = null; texture = null;
             if (!def) return;
-
-            sprite = def.pickupIconSprite;
-            if (sprite) return;
-
-            if (iconSpriteCache.TryGetValue(def, out sprite) && sprite) return;
-            if (iconTextureCache.TryGetValue(def, out texture) && texture) return;
-
-            try
-            {
-                PickupDef pd = PickupCatalog.GetPickupDef(PickupCatalog.FindPickupIndex(def.itemIndex));
-                StoreIcon(def, pd, out sprite, out texture);
-            }
-            catch (Exception e) { LogIconMiss(def.name, e.Message); }
-
-            if (!sprite && !texture) LogIconMiss(def.name, null);
+            ResolveIcon(def, def.pickupIconSprite, () => PickupCatalog.FindPickupIndex(def.itemIndex), def.name, out sprite, out texture);
         }
 
         private void ResolveEquipIcon(EquipmentDef def, out Sprite sprite, out Texture texture)
         {
             sprite = null; texture = null;
             if (!def) return;
+            ResolveIcon(def, def.pickupIconSprite, () => PickupCatalog.FindPickupIndex(def.equipmentIndex), def.name, out sprite, out texture);
+        }
 
-            sprite = def.pickupIconSprite;
+        private void ResolveIcon(UnityEngine.Object def, Sprite direct, Func<PickupIndex> pickup, string name, out Sprite sprite, out Texture texture)
+        {
+            sprite = direct; texture = null;
             if (sprite) return;
 
             if (iconSpriteCache.TryGetValue(def, out sprite) && sprite) return;
             if (iconTextureCache.TryGetValue(def, out texture) && texture) return;
+            sprite = null; texture = null;
 
+            PickupDef pd = null;
+            try { pd = PickupCatalog.GetPickupDef(pickup()); }
+            catch (Exception) { }
+
+            if (pd != null)
+            {
+                sprite = pd.iconSprite;
+                texture = pd.iconTexture;
+            }
+
+            if (!sprite && !texture) ScanIcons(def, ref sprite, ref texture);
+            if (!sprite && !texture && pd != null) ScanIcons(pd, ref sprite, ref texture);
+
+            if (sprite) iconSpriteCache[def] = sprite;
+            if (texture) iconTextureCache[def] = texture;
+
+            if (!sprite && !texture) DumpIconDiag(name, def, pd);
+        }
+
+        private static bool IconLike(string memberName, Type type)
+        {
+            return memberName.IndexOf("icon", StringComparison.OrdinalIgnoreCase) >= 0
+                || typeof(Sprite).IsAssignableFrom(type) || typeof(Texture).IsAssignableFrom(type);
+        }
+
+        private void ScanIcons(object o, ref Sprite sprite, ref Texture texture)
+        {
+            if (o == null) return;
+            var t = o.GetType();
+
+            foreach (var f in t.GetFields(AnyInst))
+            {
+                if (!IconLike(f.Name, f.FieldType)) continue;
+                object v;
+                try { v = f.GetValue(o); } catch (Exception) { continue; }
+                TakeIcon(v, ref sprite, ref texture);
+            }
+
+            foreach (var p in t.GetProperties(AnyInst))
+            {
+                if (!p.CanRead || p.GetIndexParameters().Length != 0 || !IconLike(p.Name, p.PropertyType)) continue;
+                object v;
+                try { v = p.GetValue(o, null); } catch (Exception) { continue; }
+                TakeIcon(v, ref sprite, ref texture);
+            }
+        }
+
+        private void TakeIcon(object v, ref Sprite sprite, ref Texture texture)
+        {
+            if (v == null) return;
+
+            var uo = v as UnityEngine.Object;
+            if (uo == null && v.GetType().Name.IndexOf("AssetReference", StringComparison.Ordinal) >= 0)
+                uo = LoadAssetRef(v);
+
+            var s = uo as Sprite;
+            if (!sprite && s) sprite = s;
+            var tx = uo as Texture;
+            if (!texture && tx) texture = tx;
+        }
+
+        // Addressables-ссылка: если ресурс уже загружен, берём его; иначе запускаем загрузку (результат появится в следующих кадрах).
+        private UnityEngine.Object LoadAssetRef(object reference)
+        {
             try
             {
-                PickupDef pd = PickupCatalog.GetPickupDef(PickupCatalog.FindPickupIndex(def.equipmentIndex));
-                StoreIcon(def, pd, out sprite, out texture);
+                var t = reference.GetType();
+                var asset = t.GetProperty("Asset", AnyInst)?.GetValue(reference, null) as UnityEngine.Object;
+                if (asset) return asset;
+
+                if (!assetLoadStarted.Add(reference)) return null;
+
+                var valid = t.GetMethod("RuntimeKeyIsValid", AnyInst)?.Invoke(reference, null);
+                if (valid is bool && !(bool)valid) return null;
+
+                foreach (var m in t.GetMethods(AnyInst))
+                {
+                    if (m.Name != "LoadAssetAsync" || m.GetParameters().Length != 0) continue;
+                    var method = m.IsGenericMethodDefinition ? m.MakeGenericMethod(typeof(Sprite)) : m;
+                    method.Invoke(reference, null);
+                    break;
+                }
             }
-            catch (Exception e) { LogIconMiss(def.name, e.Message); }
-
-            if (!sprite && !texture) LogIconMiss(def.name, null);
+            catch (Exception) { }
+            return null;
         }
 
-        private void StoreIcon(object key, PickupDef pd, out Sprite sprite, out Texture texture)
-        {
-            sprite = null; texture = null;
-            if (pd == null) return;
-
-            sprite = pd.iconSprite;
-            texture = pd.iconTexture;
-            if (sprite) iconSpriteCache[key] = sprite;
-            if (texture) iconTextureCache[key] = texture;
-        }
-
-        private void LogIconMiss(string name, string error)
+        private void DumpIconDiag(string name, object def, object pd)
         {
             if (iconMissLogged) return;
             iconMissLogged = true;
-            Logger.LogWarning("Иконка не найдена ни в ItemDef, ни в PickupCatalog (первый случай: " + name + ")"
-                + (error != null ? ": " + error : "") + ". Остальные такие случаи не логируются.");
+
+            var sb = new System.Text.StringBuilder("Иконка не найдена (первый случай: " + name + "). Поля с 'icon': ");
+            DumpIconMembers(sb, "ItemDef/EquipmentDef", def);
+            DumpIconMembers(sb, "PickupDef", pd);
+            Logger.LogWarning(sb.ToString());
+        }
+
+        private static void DumpIconMembers(System.Text.StringBuilder sb, string label, object o)
+        {
+            if (o == null) { sb.Append(label + "=null; "); return; }
+            var t = o.GetType();
+            foreach (var f in t.GetFields(AnyInst))
+            {
+                if (!IconLike(f.Name, f.FieldType)) continue;
+                object v = null;
+                try { v = f.GetValue(o); } catch (Exception) { }
+                var uo = v as UnityEngine.Object;
+                bool empty = v == null || (uo != null && !uo);
+                sb.Append(label + "." + f.Name + ":" + f.FieldType.Name + (empty ? "=пусто" : "=есть") + "; ");
+            }
+            foreach (var p in t.GetProperties(AnyInst))
+            {
+                if (!p.CanRead || p.GetIndexParameters().Length != 0 || !IconLike(p.Name, p.PropertyType)) continue;
+                object v = null;
+                try { v = p.GetValue(o, null); } catch (Exception) { }
+                var uo = v as UnityEngine.Object;
+                bool empty = v == null || (uo != null && !uo);
+                sb.Append(label + "." + p.Name + ":" + p.PropertyType.Name + (empty ? "=пусто" : "=есть") + "; ");
+            }
         }
 
         // ---------- Дроны ----------
@@ -216,10 +304,21 @@ namespace FirstMod
 
             string filter = (droneSearch ?? "").Trim().ToLowerInvariant();
             int cols = TileColumns();
-            int col = 0;
+            int visible = 0;
+            foreach (var e in droneList)
+                if (filter.Length == 0 || e.lower.Contains(filter)) visible++;
 
-            tileViewHeight = ListHeight(spawnTiles ? 420f : 500f);
-            droneScroll = GUILayout.BeginScrollView(droneScroll, GUILayout.Height(tileViewHeight * 0.6f));
+            // всё оставшееся место делим между каталогом (по размеру содержимого) и списком своих дронов
+            float budget = FitHeight(330f, 84f);
+            float want = spawnTiles
+                ? Mathf.Max(1, Mathf.CeilToInt(visible / (float)cols)) * (TileSize + TileGap) + 8f
+                : visible * 42f + 8f;
+            float tilesH = Mathf.Clamp(want, 80f, Mathf.Max(80f, budget * 0.5f));
+            float mineH = Mathf.Max(80f, budget - tilesH - 8f);
+            tileViewHeight = tilesH;
+
+            int col = 0;
+            droneScroll = BeginScroll(droneScroll, tilesH);
             foreach (var entry in droneList)
             {
                 if (filter.Length > 0 && !entry.lower.Contains(filter)) continue;
@@ -255,14 +354,24 @@ namespace FirstMod
             GUI.enabled = prev;
             GUILayout.EndHorizontal();
 
-            myDroneScroll = GUILayout.BeginScrollView(myDroneScroll, GUILayout.Height(tileViewHeight * 0.4f - 50f));
+            // кнопки «убрать» сеткой в несколько столбцов, чтобы помещалось больше дронов
+            float colW = ColumnWidth(spawnTiles);
+            int mineCols = Mathf.Max(1, (int)((colW - 30f) / 360f));
+            float cellW = (colW - 30f) / mineCols - 8f;
+
+            myDroneScroll = BeginScroll(myDroneScroll, mineH);
             if (myDrones.Count == 0)
                 GUILayout.Label(T("drones_none"), labelStyle);
+
+            int mc = 0;
             foreach (var d in myDrones)
             {
-                if (GUILayout.Button(T("drone_remove") + ": " + d.name + "  #" + d.netId, btnStyle))
+                if (mc == 0) GUILayout.BeginHorizontal();
+                if (GUILayout.Button(T("drone_remove") + ": " + d.name + "  #" + d.netId, btnStyle, GUILayout.Width(cellW)))
                     Send("fm_dronedel " + d.netId);
+                if (++mc >= mineCols) { GUILayout.EndHorizontal(); mc = 0; }
             }
+            if (mc > 0) GUILayout.EndHorizontal();
             GUILayout.EndScrollView();
 
             GUILayout.Label(T("drones_note"), labelStyle);

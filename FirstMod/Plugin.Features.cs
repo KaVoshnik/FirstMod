@@ -99,6 +99,7 @@ namespace FirstMod
             Loc["spawn_creatures"] = new[] { "Существа", "Creatures" };
             Loc["spawn_objects"]  = new[] { "Объекты", "Objects" };
             Loc["spawn_drones"]   = new[] { "Дроны", "Drones" };
+            Loc["r_other"]        = new[] { "Прочие", "Other" };
             Loc["drones_mine"]    = new[] { "Мои дроны:", "My drones:" };
             Loc["drones_remove_all"] = new[] { "Убрать всех моих дронов", "Remove all my drones" };
             Loc["drone_remove"]   = new[] { "Убрать", "Remove" };
@@ -760,7 +761,7 @@ namespace FirstMod
             bool prev = GUI.enabled;
             GUI.enabled = prev && NetworkServer.active && Run.instance != null;
 
-            objScroll = GUILayout.BeginScrollView(objScroll, GUILayout.Height(ListHeight(330f)));
+            objScroll = BeginScroll(objScroll, FitHeight(330f, 40f));
             foreach (var entry in objList)
             {
                 if (filter.Length > 0 && !entry.lower.Contains(filter)) continue;
@@ -791,7 +792,7 @@ namespace FirstMod
         // вкладки, которым не хватало места по высоте, оборачиваем в прокрутку
         private void ScrolledTab(int idx, Action draw)
         {
-            tabScroll[idx] = GUILayout.BeginScrollView(tabScroll[idx], GUILayout.Height(ListHeight(175f)));
+            tabScroll[idx] = BeginScroll(tabScroll[idx], FitHeight(175f));
             draw();
             GUILayout.EndScrollView();
         }
@@ -1257,7 +1258,7 @@ namespace FirstMod
         {
             EnsureSurvList();
 
-            charScroll = GUILayout.BeginScrollView(charScroll, GUILayout.Height(ListHeight(175f)));
+            charScroll = BeginScroll(charScroll, FitHeight(175f));
 
             GUILayout.BeginHorizontal();
             DrawTargetButtons();

@@ -19,8 +19,11 @@ namespace FirstMod
             if (itemList != null || ItemCatalog.itemCount <= 0) return;
 
             var list = new List<ItemEntry>();
+            var hiddenNames = new List<string>();
+            var otherNames = new List<string>();
             foreach (var def in ItemCatalog.allItemDefs)
             {
+                if (def && def.hidden) hiddenNames.Add(def.name);
                 if (!def || def.hidden) continue;
 
                 string itemName = Language.GetString(def.nameToken);
@@ -28,6 +31,7 @@ namespace FirstMod
 
                 int order; Color color;
                 TierInfo(def.tier.ToString(), out order, out color);
+                if (order >= 9) otherNames.Add(def.name + "(" + def.tier + ")");
 
                 string itemTip = TipFromToken(def.pickupToken);
                 list.Add(new ItemEntry { def = def, name = itemName, lower = (itemName + " " + itemTip).ToLowerInvariant(), order = order, color = color, tip = itemTip });
@@ -37,6 +41,12 @@ namespace FirstMod
                 ? a.order.CompareTo(b.order)
                 : string.Compare(a.name, b.name, StringComparison.CurrentCultureIgnoreCase));
             itemList = list;
+
+            // для отладки: предметы с неизвестной редкостью (новые тиры) и скрытые предметы
+            Logger.LogInfo("Предметов в списке: " + list.Count + ", с неизвестным тиром: " + otherNames.Count
+                + (otherNames.Count > 0 ? " [" + string.Join(", ", otherNames.ToArray()) + "]" : "")
+                + "; скрытых (не показываются): " + hiddenNames.Count
+                + (hiddenNames.Count > 0 ? " [" + string.Join(", ", hiddenNames.ToArray()) + "]" : ""));
         }
 
         private void EnsureEquipList()
