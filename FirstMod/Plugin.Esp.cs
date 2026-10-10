@@ -211,7 +211,7 @@ namespace FirstMod
             string token = pi.displayNameToken;
             if (!string.IsNullOrEmpty(token))
             {
-                string s = Language.GetString(token);
+                string s = GameStr(token);
                 if (!string.IsNullOrEmpty(s) && s != token) return s;
             }
             string n = pi.gameObject.name;
@@ -282,7 +282,7 @@ namespace FirstMod
                     EspFillRect(new Rect(bx, by, barW * frac, 4f), Color.Lerp(new Color(0.9f, 0.15f, 0.15f), new Color(0.25f, 0.95f, 0.3f), frac));
 
                     espSb.Length = 0;
-                    espSb.Append(body.GetDisplayName()).Append("  ")
+                    espSb.Append(BodyName(body)).Append("  ")
                          .Append(Mathf.CeilToInt(cur)).Append('/').Append(Mathf.CeilToInt(full));
                     DrawEspText(new Vector2(rect.center.x, by - 12f), espSb.ToString(), color);
                 }

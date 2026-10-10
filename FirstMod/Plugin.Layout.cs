@@ -1,4 +1,6 @@
-﻿using UnityEngine;
+﻿using System;
+using RoR2;
+using UnityEngine;
 
 namespace FirstMod
 {
@@ -36,6 +38,56 @@ namespace FirstMod
                 return ListHeight(reserved + below);
 
             return Mathf.Max(120f, windowRect.height - listTopApplied - below - WindowBottomPad);
+        }
+
+        // ---------- Язык строк игры ----------
+        private bool enMissLogged;
+
+        // Строка игры на языке меню: для EN берём английский текст, даже если игра запущена на другом языке.
+        private static string GameStr(string token)
+        {
+            if (string.IsNullOrEmpty(token)) return token;
+
+            if (currentLang == Lang.EN)
+            {
+                try
+                {
+                    string en = Language.GetString(token, "en");
+                    if (!string.IsNullOrEmpty(en) && en != token) return en;
+                    if (instance != null && !instance.enMissLogged)
+                    {
+                        instance.enMissLogged = true;
+                        instance.Logger.LogWarning("Английский текст для токена не найден (первый случай: " + token + "), показываю язык игры.");
+                    }
+                }
+                catch (Exception) { }
+            }
+            return Language.GetString(token);
+        }
+
+        private static string BodyName(CharacterBody body)
+        {
+            if (!body) return "";
+            if (currentLang == Lang.EN && !string.IsNullOrEmpty(body.baseNameToken))
+            {
+                string s = GameStr(body.baseNameToken);
+                if (!string.IsNullOrEmpty(s) && s != body.baseNameToken) return s;
+            }
+            return body.GetDisplayName();
+        }
+
+        private string pendingKeepBody;
+
+        // Смена языка меню: пересобираем всё, что взято из игры (названия предметов, существ, этапов и т.д.).
+        private void ResetGameTextCaches()
+        {
+            if (survList != null && survChoice >= 0 && survChoice < survList.Count)
+                pendingKeepBody = survList[survChoice].bodyName;
+
+            itemList = null; equipList = null; stageList = null; artifactList = null;
+            difficultyLabels = null; spawnList = null; droneList = null;
+            survList = null; survNames = null;
+            skinLabels = null; skillVariantLabels = null;
         }
     }
 }

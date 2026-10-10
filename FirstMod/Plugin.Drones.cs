@@ -19,6 +19,7 @@ namespace FirstMod
         private readonly Dictionary<object, Texture> iconTextureCache = new Dictionary<object, Texture>();
         private readonly HashSet<object> assetLoadStarted = new HashSet<object>();
         private bool iconMissLogged;
+        private float iconFirstTry = -1f;
         private const BindingFlags AnyInst = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
         private void ResolveItemIcon(ItemDef def, out Sprite sprite, out Texture texture)
@@ -43,6 +44,7 @@ namespace FirstMod
             if (iconSpriteCache.TryGetValue(def, out sprite) && sprite) return;
             if (iconTextureCache.TryGetValue(def, out texture) && texture) return;
             sprite = null; texture = null;
+            if (iconFirstTry < 0f) iconFirstTry = Time.unscaledTime;
 
             PickupDef pd = null;
             try { pd = PickupCatalog.GetPickupDef(pickup()); }
@@ -60,13 +62,22 @@ namespace FirstMod
             if (sprite) iconSpriteCache[def] = sprite;
             if (texture) iconTextureCache[def] = texture;
 
-            if (!sprite && !texture) DumpIconDiag(name, def, pd);
+            // ссылки Addressables грузятся несколько кадров, поэтому лог пишем только если иконки нет и спустя время
+            if (!sprite && !texture && Time.unscaledTime - iconFirstTry > 4f) DumpIconDiag(name, def, pd);
         }
 
         private static bool IconLike(string memberName, Type type)
         {
             return memberName.IndexOf("icon", StringComparison.OrdinalIgnoreCase) >= 0
                 || typeof(Sprite).IsAssignableFrom(type) || typeof(Texture).IsAssignableFrom(type);
+        }
+
+        // фон плитки редкости (bgIconTexture и т.п.) - это не иконка предмета
+        private static bool IsBackgroundMember(string memberName)
+        {
+            return memberName.IndexOf("bg", StringComparison.OrdinalIgnoreCase) >= 0
+                || memberName.IndexOf("background", StringComparison.OrdinalIgnoreCase) >= 0
+                || memberName.IndexOf("tier", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void ScanIcons(object o, ref Sprite sprite, ref Texture texture)
@@ -76,7 +87,7 @@ namespace FirstMod
 
             foreach (var f in t.GetFields(AnyInst))
             {
-                if (!IconLike(f.Name, f.FieldType)) continue;
+                if (!IconLike(f.Name, f.FieldType) || IsBackgroundMember(f.Name)) continue;
                 object v;
                 try { v = f.GetValue(o); } catch (Exception) { continue; }
                 TakeIcon(v, ref sprite, ref texture);
@@ -84,7 +95,7 @@ namespace FirstMod
 
             foreach (var p in t.GetProperties(AnyInst))
             {
-                if (!p.CanRead || p.GetIndexParameters().Length != 0 || !IconLike(p.Name, p.PropertyType)) continue;
+                if (!p.CanRead || p.GetIndexParameters().Length != 0 || !IconLike(p.Name, p.PropertyType) || IsBackgroundMember(p.Name)) continue;
                 object v;
                 try { v = p.GetValue(o, null); } catch (Exception) { continue; }
                 TakeIcon(v, ref sprite, ref texture);
@@ -218,7 +229,7 @@ namespace FirstMod
                         icon = b.portraitIcon;
                         if (!string.IsNullOrEmpty(b.baseNameToken))
                         {
-                            string localized = Language.GetString(b.baseNameToken);
+                            string localized = GameStr(b.baseNameToken);
                             if (!string.IsNullOrEmpty(localized)) display = localized;
                         }
                     }
@@ -249,7 +260,7 @@ namespace FirstMod
 
                 string name = null;
                 var body = m.GetBody();
-                if (body) name = body.GetDisplayName();
+                if (body) name = BodyName(body);
                 if (string.IsNullOrEmpty(name)) name = m.name.Replace("(Clone)", "");
 
                 myDrones.Add(new MyDrone { netId = m.netId.Value, name = name });

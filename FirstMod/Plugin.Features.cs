@@ -154,6 +154,7 @@ namespace FirstMod
         {
             spawnModeLabels = new[] { T("spawn_creatures"), T("spawn_objects"), T("spawn_drones") };
             eliteLabels = null; // пересоберём с новым языком
+            ResetGameTextCaches();
         }
 
         // ---------- Инициализация / завершение ----------
@@ -546,7 +547,7 @@ namespace FirstMod
                 var d = defs[i];
                 if (!d || !d.eliteEquipmentDef) continue;
 
-                string n = string.IsNullOrEmpty(d.modifierToken) ? "" : Language.GetString(d.modifierToken);
+                string n = string.IsNullOrEmpty(d.modifierToken) ? "" : GameStr(d.modifierToken);
                 n = string.IsNullOrEmpty(n) ? d.name : n.Replace("{0}", "").Trim();
                 if (n.Length == 0) n = d.name;
 
@@ -982,7 +983,7 @@ namespace FirstMod
             {
                 if (!def || !def.bodyPrefab) continue;
 
-                string n = string.IsNullOrEmpty(def.displayNameToken) ? "" : Language.GetString(def.displayNameToken);
+                string n = string.IsNullOrEmpty(def.displayNameToken) ? "" : GameStr(def.displayNameToken);
                 if (string.IsNullOrEmpty(n) || n == def.displayNameToken) n = def.bodyPrefab.name;
 
                 list.Add(new SurvivorEntry { bodyName = def.bodyPrefab.name, name = n });
@@ -996,6 +997,16 @@ namespace FirstMod
 
             survNames = names;
             survList = list;
+
+            // после смены языка меню оставляем выбранного персонажа (порядок списка зависит от названий)
+            if (pendingKeepBody != null)
+            {
+                int ni = list.FindIndex(e => e.bodyName == pendingKeepBody);
+                pendingKeepBody = null;
+                if (ni >= 0) survChoice = ni;
+                RefreshSkins();
+                RefreshSkills();
+            }
         }
 
         private void RefreshSkins()
@@ -1013,7 +1024,7 @@ namespace FirstMod
             var labels = new string[skins.Length];
             for (int i = 0; i < skins.Length; i++)
             {
-                string n = skins[i] && !string.IsNullOrEmpty(skins[i].nameToken) ? Language.GetString(skins[i].nameToken) : "";
+                string n = skins[i] && !string.IsNullOrEmpty(skins[i].nameToken) ? GameStr(skins[i].nameToken) : "";
                 labels[i] = string.IsNullOrEmpty(n) || n == skins[i].nameToken ? "#" + (i + 1) : n;
             }
             skinLabels = labels;
@@ -1058,7 +1069,7 @@ namespace FirstMod
                 for (int v = 0; v < variants.Length; v++)
                 {
                     var def = variants[v].skillDef;
-                    string n = def && !string.IsNullOrEmpty(def.skillNameToken) ? Language.GetString(def.skillNameToken) : "";
+                    string n = def && !string.IsNullOrEmpty(def.skillNameToken) ? GameStr(def.skillNameToken) : "";
                     names[v] = string.IsNullOrEmpty(n) || (def && n == def.skillNameToken) ? "#" + (v + 1) : n;
                 }
                 labels[i] = names;
@@ -1529,7 +1540,7 @@ namespace FirstMod
         {
             if (string.IsNullOrEmpty(token)) return "";
 
-            string s = Language.GetString(token);
+            string s = GameStr(token);
             if (string.IsNullOrEmpty(s) || s == token) return "";
 
             s = System.Text.RegularExpressions.Regex.Replace(s, "<.*?>", "");

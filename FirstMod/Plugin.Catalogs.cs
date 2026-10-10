@@ -26,7 +26,7 @@ namespace FirstMod
                 if (def && def.hidden) hiddenNames.Add(def.name);
                 if (!def || def.hidden) continue;
 
-                string itemName = Language.GetString(def.nameToken);
+                string itemName = GameStr(def.nameToken);
                 if (string.IsNullOrEmpty(itemName)) itemName = def.name;
 
                 int order; Color color;
@@ -59,7 +59,7 @@ namespace FirstMod
                 var def = EquipmentCatalog.GetEquipmentDef((EquipmentIndex)i);
                 if (!def || string.IsNullOrEmpty(def.nameToken)) continue;
 
-                string equipName = Language.GetString(def.nameToken);
+                string equipName = GameStr(def.nameToken);
                 if (string.IsNullOrEmpty(equipName)) equipName = def.name;
 
                 int order = def.isLunar ? 2 : (def.isBoss ? 1 : 0);
@@ -90,7 +90,7 @@ namespace FirstMod
                         if (!def || def.sceneType != SceneType.Stage || def.isOfflineScene) continue;
                         if (string.IsNullOrEmpty(def.cachedName)) continue;
 
-                        string stageName = string.IsNullOrEmpty(def.nameToken) ? def.cachedName : Language.GetString(def.nameToken);
+                        string stageName = string.IsNullOrEmpty(def.nameToken) ? def.cachedName : GameStr(def.nameToken);
                         if (string.IsNullOrEmpty(stageName)) stageName = def.cachedName;
 
                         string label = stageName + "  [" + def.cachedName + "]";
@@ -115,7 +115,7 @@ namespace FirstMod
                         var def = ArtifactCatalog.GetArtifactDef((ArtifactIndex)ai);
                         if (!def || string.IsNullOrEmpty(def.cachedName)) continue;
 
-                        string artName = string.IsNullOrEmpty(def.nameToken) ? def.cachedName : Language.GetString(def.nameToken);
+                        string artName = string.IsNullOrEmpty(def.nameToken) ? def.cachedName : GameStr(def.nameToken);
                         if (string.IsNullOrEmpty(artName)) artName = def.cachedName;
 
                         list.Add(new ArtifactEntry { def = def, name = artName });
@@ -136,7 +136,7 @@ namespace FirstMod
                 {
                     var dd = GetDifficultyDefSafe(i);
                     if (dd == null) break;
-                    string diffName = Language.GetString(dd.nameToken);
+                    string diffName = GameStr(dd.nameToken);
                     labels.Add(string.IsNullOrEmpty(diffName) ? "#" + i : diffName);
                 }
                 if (labels.Count > 0) difficultyLabels = labels.ToArray();
@@ -168,7 +168,7 @@ namespace FirstMod
 
                         if (!string.IsNullOrEmpty(b.baseNameToken))
                         {
-                            string localized = Language.GetString(b.baseNameToken);
+                            string localized = GameStr(b.baseNameToken);
                             if (!string.IsNullOrEmpty(localized)) display = localized;
                         }
                     }

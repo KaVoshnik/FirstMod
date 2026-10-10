@@ -1,6 +1,6 @@
 {
     "name": "FirstMod",
-    "version_number": "0.10.1",
+    "version_number": "0.10.2",
     "website_url": "https://github.com/KaVoshnik/FirstMod",
     "description": "Multiplayer-aware cheat menu: items, spawn, teleports, run control, presets. RU/EN UI.",
     "dependencies": [

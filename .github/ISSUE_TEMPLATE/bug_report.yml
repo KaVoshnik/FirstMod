@@ -1,0 +1,55 @@
+name: Bug report / Сообщить об ошибке
+description: Something does not work as expected / Что-то работает не так
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! The more details, the faster the fix. / Спасибо! Чем больше деталей, тем быстрее исправим.
+  - type: input
+    id: version
+    attributes:
+      label: FirstMod version / Версия мода
+      placeholder: "0.10.2"
+    validations:
+      required: true
+  - type: input
+    id: game
+    attributes:
+      label: Game version / Версия игры
+      description: Shown in the bottom-left of the main menu / Внизу слева в главном меню
+      placeholder: "1.5.0"
+  - type: dropdown
+    id: role
+    attributes:
+      label: Host or client? / Хост или клиент?
+      options:
+        - Singleplayer / Одиночная игра
+        - Host / Хост
+        - Client / Клиент
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened? / Что произошло?
+      description: What you expected and what you got instead / Что ожидали и что получили
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / Как воспроизвести
+      placeholder: |
+        1. Open the menu (N)
+        2. ...
+  - type: textarea
+    id: log
+    attributes:
+      label: Log / Лог
+      description: Attach `BepInEx/LogOutput.log` (drag the file here) or paste the relevant part / Приложите `BepInEx/LogOutput.log` или вставьте нужный фрагмент
+  - type: textarea
+    id: mods
+    attributes:
+      label: Other mods / Другие моды
+      description: Mod list of your profile, if any / Список модов профиля, если есть
