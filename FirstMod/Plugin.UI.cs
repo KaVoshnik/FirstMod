@@ -721,7 +721,9 @@ namespace FirstMod
                     if (itemTiles)
                     {
                         if (col == 0) GUILayout.BeginHorizontal();
-                        if (DrawTile(entry.def.pickupIconSprite, entry.color, entry.name, -1, entry.tip))
+                        Sprite eqSprite; Texture eqTex;
+                        ResolveEquipIcon(entry.def, out eqSprite, out eqTex);
+                        if (DrawTile(eqSprite, eqTex, entry.color, entry.name, -1, itemScroll.y, entry.tip))
                             Send("fm_equip " + entry.def.name + " " + TargetArg());
                         if (++col >= cols) { GUILayout.EndHorizontal(); GUILayout.Space(TileGap); col = 0; }
                     }
@@ -776,7 +778,9 @@ namespace FirstMod
                 if (itemTiles)
                 {
                     if (col == 0) GUILayout.BeginHorizontal();
-                    clicked = DrawTile(entry.def.pickupIconSprite, entry.color, entry.name, have > 0 ? have : -1, entry.tip);
+                    Sprite itSprite; Texture itTex;
+                    ResolveItemIcon(entry.def, out itSprite, out itTex);
+                    clicked = DrawTile(itSprite, itTex, entry.color, entry.name, have > 0 ? have : -1, itemScroll.y, entry.tip);
                     if (++col >= cols) { GUILayout.EndHorizontal(); GUILayout.Space(TileGap); col = 0; }
                 }
                 else
@@ -900,7 +904,8 @@ namespace FirstMod
             // режим: существа / объекты
             if (DrawSpawnModeSwitch())
             {
-                DrawSpawnObjects();
+                if (spawnMode == 2) DrawDrones();
+                else DrawSpawnObjects();
                 return;
             }
 

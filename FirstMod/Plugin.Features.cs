@@ -32,7 +32,7 @@ namespace FirstMod
         private Vector2 charScroll;
 
         // спавн: режим, элита, точка прицела
-        private int spawnMode;                  // 0 = существа, 1 = объекты
+        private int spawnMode;                  // 0 = существа, 1 = объекты, 2 = дроны
         private string[] spawnModeLabels;
         private bool spawnAtAim;
         private string[] eliteLabels;
@@ -98,6 +98,13 @@ namespace FirstMod
 
             Loc["spawn_creatures"] = new[] { "Существа", "Creatures" };
             Loc["spawn_objects"]  = new[] { "Объекты", "Objects" };
+            Loc["spawn_drones"]   = new[] { "Дроны", "Drones" };
+            Loc["drones_mine"]    = new[] { "Мои дроны:", "My drones:" };
+            Loc["drones_remove_all"] = new[] { "Убрать всех моих дронов", "Remove all my drones" };
+            Loc["drone_remove"]   = new[] { "Убрать", "Remove" };
+            Loc["drones_none"]    = new[] { "У вас сейчас нет дронов", "You have no drones right now" };
+            Loc["drones_note"]    = new[] { "Клик по дрону - появится союзником перед вами. Убирать можно только своих дронов.",
+                                            "Click a drone to spawn it as your ally in front of you. You can only remove your own drones." };
             Loc["elite_label"]    = new[] { "Элита:", "Elite:" };
             Loc["elite_none"]     = new[] { "Обычные", "None" };
             Loc["spawn_aim"]      = new[] { "В точку прицела", "At Crosshair" };
@@ -144,7 +151,7 @@ namespace FirstMod
 
         private void ExtraRebuildLabels()
         {
-            spawnModeLabels = new[] { T("spawn_creatures"), T("spawn_objects") };
+            spawnModeLabels = new[] { T("spawn_creatures"), T("spawn_objects"), T("spawn_drones") };
             eliteLabels = null; // пересоберём с новым языком
         }
 
@@ -723,14 +730,14 @@ namespace FirstMod
 
         private bool DrawSpawnModeSwitch()
         {
-            int newMode = GUILayout.Toolbar(spawnMode, spawnModeLabels, tabStyle, GUILayout.Width(420));
+            int newMode = GUILayout.Toolbar(spawnMode, spawnModeLabels, tabStyle, GUILayout.Width(620));
             if (newMode != spawnMode)
             {
                 int m = newMode;
                 pendingUi.Add(() => spawnMode = m); // смена режима меняет набор элементов - применяем в начале раскладки
             }
             GUILayout.Space(8);
-            return spawnMode == 1;
+            return spawnMode != 0;
         }
 
         private void DrawSpawnObjects()

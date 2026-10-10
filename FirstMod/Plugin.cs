@@ -16,7 +16,7 @@ namespace FirstMod
     {
         // Версия мода: единственное место, где её нужно менять (атрибут BepInEx и вкладка «Настройки»).
         // Правило: мелкое обновление +0.0.1, крупное +0.1.0.
-        public const string ModVersion = "0.9.0";
+        public const string ModVersion = "0.10.0";
 
         // ---------- Состояние (клиентская часть) ----------
         private bool showMenu;

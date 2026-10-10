@@ -49,6 +49,7 @@ namespace FirstMod
             new[] { "fm_body",        "CmdBody" },
             new[] { "fm_portal",      "CmdPortal" },
             new[] { "fm_chestrun",    "CmdChestRun" },
+            new[] { "fm_dronedel",    "CmdDroneDel" },
         };
 
         private void RegisterCommands()
